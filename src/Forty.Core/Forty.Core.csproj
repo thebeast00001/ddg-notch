@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- What the island shows and why: activities, the queue and its rules, modes, layout sizes,
+       feature flags and adapter health. Pure logic with no Windows dependency, fully testable. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Forty.Core</RootNamespace>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Springs, motion tokens and gesture maths. No UI dependency, so every number here can be
+       tested on its own; the app binds it to the compositor. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Forty.Motion</RootNamespace>
+  </PropertyGroup>
+
+</Project>

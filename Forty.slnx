@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Forty.App/Forty.App.csproj">
+      <Platform Project="x64" />
+    </Project>
+    <Project Path="src/Forty.Core/Forty.Core.csproj" />
+    <Project Path="src/Forty.Motion/Forty.Motion.csproj" />
+    <Project Path="src/Forty.Platform/Forty.Platform.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Forty.Tests/Forty.Tests.csproj" />
+  </Folder>
+</Solution>

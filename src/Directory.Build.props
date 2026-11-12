@@ -1,0 +1,14 @@
+<Project>
+  <!-- Settings shared by every Forty project. Warnings are errors: the spikes were allowed to be
+       rough; the product is not. -->
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <Company>Forty</Company>
+    <Product>Forty</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+</Project>

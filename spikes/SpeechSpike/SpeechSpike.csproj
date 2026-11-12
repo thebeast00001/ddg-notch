@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Throwaway proof for spike S4 (speech): which engine, how accurate, how fast, from C#.
+       The sherpa-onnx library is referenced straight from the two unpacked NuGet packages in
+       ..\packages so that nothing else has to be downloaded. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <RootNamespace>SpeechSpike</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="sherpa-onnx">
+      <HintPath>..\packages\sherpa-onnx\lib\net10.0\sherpa-onnx.dll</HintPath>
+    </Reference>
+    <None Include="..\packages\sherpa-onnx-runtime\runtimes\win-x64\native\*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

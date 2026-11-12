@@ -1,0 +1,9 @@
+bin/
+obj/
+spikes/out/
+spikes/models/
+spikes/packages/
+spikes/clips/
+*.user
+.vs/
+out/
