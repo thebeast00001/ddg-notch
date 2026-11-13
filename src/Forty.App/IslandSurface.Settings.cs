@@ -48,6 +48,7 @@ sealed partial class IslandSurface
         foreach (var row in _rows) if (row.Visible) row.Leave(toScale: 0.96);
         HideLyrics();
         _panelContent.Children.Clear();
+        _switches.Clear();
         _panelArt = null;
         _progressFill = null;
         _clockTimer.Stop();
@@ -225,47 +226,33 @@ sealed partial class IslandSurface
     }
 
     /// <summary>
-    /// An on/off switch. The knob slides on the press spring and the track changes colour immediately;
-    /// the choice is saved after. Its state lives in the switch, so the page never has to be rebuilt.
+    /// An on/off switch (see <see cref="IslandSwitch"/>): pressed, dragged or thrown like a real one. The
+    /// choice is saved after it flips. Its state lives in the switch, so the page never has to be rebuilt.
     /// </summary>
     Button Switch(bool on, string command, string name)
     {
-        var knob = new Border { Width = 20, Height = 20, CornerRadius = new CornerRadius(10), Background = Brush(Windows.UI.Color.FromArgb(255, 255, 255, 255)), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(2, 0, 0, 0) };
-        var track = new Grid { Width = 42, Height = 24, CornerRadius = new CornerRadius(12) };
-        track.Children.Add(knob);
-        var slide = new Part(knob, _win.Compositor, 1);
-        bool state = on;
-        void Paint(bool animate)
-        {
-            track.Background = Brush(state ? Palette.Done : Windows.UI.Color.FromArgb(56, 255, 255, 255));
-            if (animate) slide.Nudge(state ? 18 : 0, 0, Feel.Pop);
-            else slide.Place(state ? 18 : 0, 0, 1);
-        }
-        Paint(false);
-        Button button = new IslandButton(track, name, ButtonLook.None, 42, 24, 12, _win.Compositor);
-        button.Tag = "switch";
-        AutomationProperties.SetItemStatus(button, state ? "On" : "Off");
-        button.Click += (_, _) =>
-        {
-            state = !state;
-            Paint(true);
-            AutomationProperties.SetItemStatus(button, state ? "On" : "Off");
-            Command?.Invoke(command);
-        };
-        return button;
+        var toggle = new IslandSwitch(on, name, _win.Compositor);
+        toggle.Toggled += _ => Command?.Invoke(command);
+        _switches.Add(toggle);
+        return toggle.Button;
     }
+
+    /// <summary>The switches on the settings page as built last (for the layout check's poses).</summary>
+    readonly List<IslandSwitch> _switches = new();
+    public IReadOnlyList<IslandSwitch> Switches => _switches;
 
     /// <summary>A pill that toggles between outlined and filled on press, for choices such as alert levels.</summary>
     Button Chip(string label, bool on, string command)
     {
-        var text = IconArt.Label(label, 12, Palette.Primary, TextFace);
-        var island = new IslandButton(text, label, ButtonLook.Soft, double.NaN, 28, 14, _win.Compositor, new Thickness(13, 0, 13, 0));
+        var text = IconArt.Label(label, 12, on ? Palette.OnPrimary : Palette.Primary, TextFace);
+        var ink = (SolidColorBrush)text.Foreground;
+        var island = new IslandButton(text, label, on ? ButtonLook.Filled : ButtonLook.Soft, double.NaN, 28, 14, _win.Compositor, new Thickness(13, 0, 13, 0));
         Button button = island;
         bool state = on;
         void Paint()
         {
             island.Look = state ? ButtonLook.Filled : ButtonLook.Soft;
-            text.Foreground = Brush(state ? Palette.OnPrimary : Palette.Primary);
+            Ease.Colour(ink, state ? Palette.OnPrimary : Palette.Primary);   // the letters change with the plate, not a frame before it
             AutomationProperties.SetItemStatus(button, state ? "Selected" : "Not selected");
         }
         Paint();

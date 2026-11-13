@@ -39,6 +39,7 @@ sealed partial class App : Application
     /// </summary>
     const string DefaultFlags = """
         {
+          "agents": "you",
           "audio-output": "on",
           "bluetooth": "on",
           "diagnostics": "you",

@@ -123,6 +123,7 @@ sealed class IslandController : IDisposable
     /// <summary>Starts the adapters. Their events arrive on Windows' threads and are moved to the UI thread here.</summary>
     public void Start(bool adapters = true)
     {
+        foreach (var agent in Cast.All) { var a = agent; _roster[a].Changed += () => Ui(() => UpdateAgent(a)); }
         ApplyLook();
         _flags.Changed += () => Ui(() => { _music.OnFlagsChanged(); ApplyLook(); });
         _win.SettingsChanged += () => Ui(ApplyLook);
@@ -131,7 +132,7 @@ sealed class IslandController : IDisposable
         _flags.Changed += () => Ui(() => { if (!_flags.IsOn("follow-display")) PlaceOnDisplay(); else SyncMirrors(); });
         _win.Show();
         SyncMirrors();   // after the island shows, so the mirrors show with it
-        _win.RegisterHotkey();
+        if (adapters) _win.RegisterHotkey();   // a scripted demo never takes your global shortcut (a press anywhere would toggle its panel)
         if (_flags.IsOn("diagnostics")) StartResourceSampler();
         // F121: half a minute after starting, and once a day after that, every file Forty wrote is
         // checked for key text, which is cut out if found. Off the UI thread; only counts are kept.
@@ -337,10 +338,44 @@ sealed class IslandController : IDisposable
     /// </summary>
     void ListenToSpeech()
     {
-        Speech.Line += line => Ui(() => OnSpeech(_speech.Apply(line, Clock.Now)));
+        Speech.Line += line => Ui(() => OnSpeechLine(line));
         Speech.Connected += () => Ui(() => { _policySent = null; SendPolicy(); Speech.Send("state?"); });
-        Speech.Lost += running => Ui(() => OnSpeech(running ? _speech.LinkLost(Clock.Now) : _speech.ProcessGone()));
-        Speech.ProcessExited += () => Ui(() => OnSpeech(_speech.ProcessGone()));
+        Speech.Lost += running => Ui(() => { OnSpeech(running ? _speech.LinkLost(Clock.Now) : _speech.ProcessGone()); if (!running) _roster.ApplySpeech("bye", Clock.Now); });
+        Speech.ProcessExited += () => Ui(() => { OnSpeech(_speech.ProcessGone()); _roster.ApplySpeech("bye", Clock.Now); });
+    }
+
+    /// <summary>One line from the speech process: the marks and activities (F116), and Scribe's run, whose jobs these are.</summary>
+    void OnSpeechLine(string line)
+    {
+        var changes = _speech.Apply(line, Clock.Now);
+        OnSpeech(changes);
+        _roster.ApplySpeech(line, Clock.Now);
+        if (changes.Level is { } level) _surface.SetAgentLevel(Cast.Scribe, level);
+    }
+
+    // ── The agents (phase 2) ──
+
+    readonly Roster _roster = new();
+    public Roster Roster => _roster;
+
+    /// <summary>The roster strip is on unless the flags file turns it off.</summary>
+    bool AgentsOn => !_flags.Has("agents") || _flags.IsOn("agents");
+
+    AgentView ViewOf(Agent agent)
+    {
+        var run = _roster[agent];
+        return new AgentView(agent, run.StateAt(Clock.Now), run.Detail, run.Progress);
+    }
+
+    /// <summary>
+    /// A run changed: its mark and line change in place. Done reads as Idle two seconds later (the
+    /// spec's one timed step), so the mark is looked at again then.
+    /// </summary>
+    void UpdateAgent(Agent agent)
+    {
+        var view = ViewOf(agent);
+        _surface.ShowAgent(view);
+        if (view.State == AgentState.Done) Timer((int)(AgentRun.DoneSeconds * 1000) + 50, () => _surface.ShowAgent(ViewOf(agent))).Start();
     }
 
     /// <summary>Applies what the speech process reported: the level goes straight to the meter, the rest through the queue.</summary>
@@ -557,7 +592,8 @@ sealed class IslandController : IDisposable
         foreach (var mark in view.Marks)   // every mark is listed in the panel, with its Stop button
             if (mark.Key != primary?.Key && others.All(o => o.Key != mark.Key)) others.Insert(0, mark);
         DateTimeOffset? recordingSince = _speech.CallSince is { } since ? DateTimeOffset.Now - TimeSpan.FromSeconds(Clock.Now - since) : null;
-        var model = new PanelModel(primary, others, _music.View, BatteryNow(), Bluetooth.Devices, ModeLine(view.Mode), recordingSince);
+        var model = new PanelModel(primary, others, _music.View, BatteryNow(), Bluetooth.Devices, ModeLine(view.Mode), recordingSince,
+                                   AgentsOn ? Cast.Working.Select(ViewOf).ToList() : null);
         // Power and position reports arrive often. Rebuilding an open panel each time would waste work
         // and take keyboard focus away from you, so it is rebuilt only when what it shows changes.
         if (_expanded && _lastPanel is { } shown && Same(shown, model) && _body.Shape.Name != "full") return;
@@ -688,6 +724,7 @@ sealed class IslandController : IDisposable
     static bool Same(PanelModel a, PanelModel b) =>
         Equals(a.Primary, b.Primary) && a.Others.SequenceEqual(b.Others) && a.ModeLine == b.ModeLine && a.Battery == b.Battery &&
         (a.RecordingSince == null) == (b.RecordingSince == null) &&
+        (a.Agents == null) == (b.Agents == null) &&   // agents' states change in place, not by rebuilding
         a.Devices.SequenceEqual(b.Devices) &&
         Equals(a.Music is { } m ? m with { Clock = default } : null, b.Music is { } n ? n with { Clock = default } : null);
 
@@ -1004,6 +1041,7 @@ sealed class IslandController : IDisposable
     // ── For the scripted demo ──
 
     public void DemoExpand() => Expand(takeFocus: false);
+    public bool Expanded => _expanded;
     public void DemoCollapse() => Collapse();
     public void DemoMusic(NowPlaying? playing, byte[]? art, string? lyrics) => ShowMusic(playing, art, lyrics);
     public void DemoPosition(PlaybackClock clock) => _music.OnPosition(clock);
@@ -1012,7 +1050,7 @@ sealed class IslandController : IDisposable
     public void DemoPower(PowerSnapshot snapshot) => _demoPower = snapshot;
     public void DemoCommand(string command) => OnCommand(command);
     public void DemoScrollSettings() => _surface.ScrollSettingsToEnd();
-    public void DemoSpeech(string line) => OnSpeech(_speech.Apply(line, Clock.Now));
+    public void DemoSpeech(string line) => OnSpeechLine(line);
     /// <summary>For the layout check: holds the satellite part-way out of the capsule (F5); 1 puts it at rest.</summary>
     public void DemoPoseSplit(double split) { _body.Satellite.Set(Body.SatelliteSize); _body.Split.Set(split); }
     public void DemoDisplaysChanged() => PlaceOnDisplay();

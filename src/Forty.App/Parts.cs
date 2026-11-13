@@ -23,6 +23,10 @@ static class Feel
     public static readonly Spring LyricWidth = new(0.9, 0.34);
     /// <summary>Colours crossing over from one song to the next.</summary>
     public const double ColourSeconds = 0.7;
+    /// <summary>A button let go: back to full size with the smallest give, so the release feels physical.</summary>
+    public static readonly Spring Release = new(0.75, 0.30);
+    /// <summary>An icon changing shape (play to pause): quick and nearly critically damped.</summary>
+    public static readonly Spring Morph = new(0.9, 0.30);
 }
 
 /// <summary>
@@ -120,6 +124,9 @@ sealed class Part
         _version++;
         _opacity.Set(0);
     }
+
+    /// <summary>Changes size on a spring, from wherever it is now (a press, a release).</summary>
+    public void ScaleTo(double scale, Spring spring) => _scale.To(scale, spring);
 
     /// <summary>Jumps to a pose with no motion, ready for a spring to carry it home.</summary>
     public void Place(double x, double y, double scale)

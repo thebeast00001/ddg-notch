@@ -36,7 +36,11 @@ sealed record CapsuleContent(Activity Activity, MusicView? Music, BatteryView? B
 
 /// <summary>What the expanded panel shows.</summary>
 sealed record PanelModel(Activity? Primary, IReadOnlyList<Activity> Others, MusicView? Music, BatteryView? Battery,
-                         IReadOnlyList<BluetoothState> Devices, string ModeLine, DateTimeOffset? RecordingSince = null);
+                         IReadOnlyList<BluetoothState> Devices, string ModeLine, DateTimeOffset? RecordingSince = null,
+                         IReadOnlyList<AgentView>? Agents = null);
+
+/// <summary>One agent as the panel shows it: who, in which state, and the tool, question or reason that goes with it.</summary>
+sealed record AgentView(Agent Agent, AgentState State, string? Detail, double? Progress);
 
 /// <summary>
 /// The content inside the body, built in layers so every change is one gesture with depth:
@@ -296,6 +300,7 @@ sealed partial class IslandSurface
         _recordingSince = model.RecordingSince;
         _clockTimer.Stop();
 
+        if (model.Agents is { Count: > 0 } agents) AddRoster(agents);
         if (model.Music is { } music && model.Primary?.Key == MediaAdapter.ActivityKey) AddMusic(music);
         else if (model.Primary is { } p) AddHeader(p, capsuleWidth);
         else _panelContent.Children.Add(Text("Nothing happening", 15, FontWeights.SemiBold, Palette.Primary));
@@ -309,7 +314,7 @@ sealed partial class IslandSurface
 
         _panel.IsHitTestVisible = true;
         _panelContent.Measure(new Windows.Foundation.Size(BodyShape.Panel.Width, double.PositiveInfinity));
-        double height = Math.Clamp(Math.Ceiling(_panelContent.DesiredSize.Height), 120, 400);   // room for the full music panel with a recording line
+        double height = Math.Clamp(Math.Ceiling(_panelContent.DesiredSize.Height), 120, 460);   // room for the roster and the full music panel with a recording line
 
         if (fromSettings)
         {
@@ -499,7 +504,7 @@ sealed partial class IslandSurface
         var dim = Windows.UI.Color.FromArgb(190, 255, 255, 255);
         Place(Round(IconArt.Glyph("\uE8B1", 15, shuffle ? highlight : dim), "Shuffle", 36, shuffle ? ButtonLook.Tinted(highlight) : ButtonLook.Quiet, "shuffle", music.Shuffle != null), 0);
         Place(Round(IconArt.Drawing(IconArt.Previous, 22, Palette.Primary), "Previous track", 44, ButtonLook.Quiet, "previous"), 1);
-        Place(Round(IconArt.Drawing(music.Playing ? IconArt.Pause : IconArt.Play, 26, Palette.OnPrimary), music.Playing ? "Pause" : "Play", 56, ButtonLook.Filled, "playpause"), 2);
+        Place(PlayPause(ref _playGlyph, 26, Palette.OnPrimary, music.Playing, 56, ButtonLook.Filled), 2);
         Place(Round(IconArt.Drawing(IconArt.Next, 22, Palette.Primary), "Next track", 44, ButtonLook.Quiet, "next"), 3);
         Place(Round(IconArt.Glyph(music.Repeat == RepeatMode.Track ? "\uE8ED" : "\uE8EE", 15, repeat ? highlight : dim),
                     music.Repeat switch { RepeatMode.Track => "Repeat one", RepeatMode.List => "Repeat all", _ => "Repeat off" },
@@ -572,7 +577,7 @@ sealed partial class IslandSurface
         title.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(title, 1);
         line.Children.Add(title);
-        var play = Round(IconArt.Drawing(music.Playing ? IconArt.Pause : IconArt.Play, 16, Palette.Primary), music.Playing ? "Pause" : "Play", 32, ButtonLook.Quiet, "playpause");
+        var play = PlayPause(ref _miniPlayGlyph, 16, Palette.Primary, music.Playing, 32, ButtonLook.Quiet);
         Grid.SetColumn(play, 2);
         line.Children.Add(play);
         _panelContent.Children.Add(line);
@@ -708,6 +713,32 @@ sealed partial class IslandSurface
         _panelContent.Children.Add(footer);
     }
 
+    PlayPauseGlyph? _playGlyph, _miniPlayGlyph;
+    public PlayPauseGlyph? PlayGlyph => _playGlyph;
+
+    /// <summary>
+    /// The play/pause button. Its glyph outlives the panel, so a rebuilt transport changes shape from
+    /// wherever the last one was; pressing it changes shape at once, before the player has answered
+    /// (if the player then disagrees, the rebuilt panel turns it back).
+    /// </summary>
+    Button PlayPause(ref PlayPauseGlyph? glyph, double size, Windows.UI.Color colour, bool playing, double buttonSize, ButtonLook look)
+    {
+        glyph ??= new PlayPauseGlyph(_win.Compositor, size, colour, playing);
+        var g = glyph;
+        g.SetColour(colour);
+        g.Set(playing);
+        var button = new IslandButton(g.Detach(), playing ? "Pause" : "Play", look, buttonSize, buttonSize, buttonSize / 2, _win.Compositor);
+        g.Holder = button.Plate;
+        button.Button.HorizontalAlignment = HorizontalAlignment.Center;
+        button.Button.Click += (_, _) =>
+        {
+            g.Set(!g.Playing);
+            AutomationProperties.SetName(button.Button, g.Playing ? "Pause" : "Play");
+            Command?.Invoke("playpause");
+        };
+        return button;
+    }
+
     /// <summary>A round button: a centred icon on a plate of the given look (see <see cref="IslandButton"/>).</summary>
     Button Round(FrameworkElement icon, string name, double size, ButtonLook look, string command, bool enabled = true)
     {
@@ -812,6 +843,104 @@ sealed partial class IslandSurface
         var peer = FrameworkElementAutomationPeer.FromElement(_satellite) ?? FrameworkElementAutomationPeer.CreatePeerForElement(_satellite);
         peer?.RaiseNotificationEvent(AutomationNotificationKind.Other, AutomationNotificationProcessing.ImportantMostRecent, mark.Narration, mark.Key);
     }
+
+    // ── The agents (phase 2) ──
+
+    readonly Dictionary<string, AgentMark> _marks = new();
+    readonly Dictionary<string, (TextBlock Line, FrameworkElement Cell)> _agentCells = new();
+    public IReadOnlyDictionary<string, AgentMark> Marks => _marks;
+
+    AgentMark MarkFor(Agent agent) => _marks.TryGetValue(agent.Id, out var mark) ? mark : _marks[agent.Id] = new AgentMark(agent, _win.Compositor, 22);
+
+    /// <summary>
+    /// The roster strip (F20), at the top of the panel: each agent's mark, name and what it is doing.
+    /// The marks outlive the panel, so a state that changes while the panel rebuilds carries on where
+    /// it was; states change in place, and nothing reorders while you look at it.
+    /// </summary>
+    void AddRoster(IReadOnlyList<AgentView> agents)
+    {
+        _agentCells.Clear();
+        var strip = new Grid { ColumnSpacing = 10, Margin = new Thickness(0, 0, 0, 4) };
+        foreach (var view in agents)
+        {
+            strip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var cell = new Grid { ColumnSpacing = 9 };
+            cell.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            cell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var mark = MarkFor(view.Agent);
+            mark.PlaceIn(cell).VerticalAlignment = VerticalAlignment.Center;
+            var words = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+            words.Children.Add(Text(view.Agent.Name, 12.5, FontWeights.SemiBold, Palette.Primary, trim: true));
+            var line = Text(AgentWords.Line(view.State, view.Detail, view.Progress), 11, FontWeights.Normal, Palette.Tertiary, trim: true);
+            words.Children.Add(line);
+            Grid.SetColumn(words, 1);
+            cell.Children.Add(words);
+            AutomationProperties.SetName(cell, AgentWords.Announcement(view.Agent, view.State, view.Detail));
+            Grid.SetColumn(cell, strip.ColumnDefinitions.Count - 1);
+            strip.Children.Add(cell);
+            _agentCells[view.Agent.Id] = (line, cell);
+            if (mark.State != view.State) mark.Show(view.State, ToolGlyph(view.Detail));
+        }
+        _panelContent.Children.Add(strip);
+    }
+
+    /// <summary>An agent's state changed: its mark moves to the new pose, and its line and label follow, without rebuilding anything.</summary>
+    public void ShowAgent(AgentView view)
+    {
+        var mark = MarkFor(view.Agent);
+        if (mark.State != view.State) mark.Show(view.State, ToolGlyph(view.Detail));
+        if (!_agentCells.TryGetValue(view.Agent.Id, out var cell)) return;
+        cell.Line.Text = AgentWords.Line(view.State, view.Detail, view.Progress);
+        string words = AgentWords.Announcement(view.Agent, view.State, view.Detail);
+        AutomationProperties.SetName(cell.Cell, words);
+        var peer = FrameworkElementAutomationPeer.FromElement(cell.Cell) ?? FrameworkElementAutomationPeer.CreatePeerForElement(cell.Cell);
+        peer?.RaiseNotificationEvent(AutomationNotificationKind.Other,
+            AgentWords.Assertive(view.State) ? AutomationNotificationProcessing.ImportantMostRecent : AutomationNotificationProcessing.MostRecent,
+            words, "agent." + view.Agent.Id);
+    }
+
+    public void SetAgentLevel(Agent agent, double level) => MarkFor(agent).SetLevel(level);
+
+    readonly List<AgentMark> _sheet = new();
+
+    /// <summary>For the layout check: every agent (rows) in every state (columns), at a size that can be read, in place of the panel's content.</summary>
+    public FrameworkElement DemoMarkSheet(double size)
+    {
+        _panelContent.Children.Clear();
+        _sheet.Clear();
+        var states = Enum.GetValues<AgentState>();
+        var grid = new Grid { RowSpacing = 14, ColumnSpacing = 8, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(0, 0, 8, 10) };
+        foreach (var _ in states) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var cast = Cast.All;
+        for (int r = 0; r < cast.Count; r++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            for (int c = 0; c < states.Length; c++)
+            {
+                var mark = new AgentMark(cast[r], _win.Compositor, size);
+                _sheet.Add(mark);   // the mark owns the springs its shapes follow, so it must live as long as they show
+                mark.Pose(states[c], 0.6, states[c] == AgentState.UsingTool ? "" : null);
+                Grid.SetRow(mark.Element, r);
+                Grid.SetColumn(mark.Element, c);
+                grid.Children.Add(mark.Element);
+            }
+        }
+        _panelContent.Children.Add(grid);
+        return grid;
+    }
+
+    /// <summary>The Segoe Fluent glyph for a tool an agent names, or the general tool glyph.</summary>
+    static string? ToolGlyph(string? tool) => tool?.ToLowerInvariant() switch
+    {
+        null => null,
+        "files" => "",
+        "calendar" => "",
+        "web" or "search" => "",
+        "apps" => "",
+        "media" => "",
+        "mail" => "",
+        _ => "",
+    };
 
     /// <summary>Narrator hears ambient changes politely and things that need you assertively (MOTION.md 11).</summary>
     static void Announce(UIElement element, Activity activity)

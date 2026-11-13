@@ -367,6 +367,12 @@ You said the buttons looked cheap, lyrics sat a little high, and the red dot was
 - **Icons.** Play, pause, previous and next are filled vector shapes centred on their visual weight. The recording mark is a ring and a dot drawn exactly concentric, everywhere it appears.
 - **Text.** Labels and single lyric lines are centred on their letters, from cap height to baseline, instead of on the line box.
 - **Measured.** `FORTY_DEMO=layout` measures every icon and label against its box, off screen. Everything is within one device pixel vertically. The rules are in MOTION.md 14d.
+- **Second pass (Apple's fluid-interface rules).**
+  - **Switches:** pressed, dragged and thrown like real ones. The knob stretches on press and follows the finger 1:1. The throw decides, carrying the finger's speed, and the track colour follows the knob.
+  - **Buttons:** they sink on a spring by a depth matched to their size, and spring back on release.
+  - **Play and pause:** they morph into each other, starting on your press.
+  - **Chips:** their text colour eases with the plate.
+  - **Checked:** the layout check holds each in a series of poses and captures them. Details are in MOTION.md 14e.
 
 ### The code-only items (13 November)
 
@@ -536,6 +542,47 @@ You run it for a week without quitting it. At rest it draws 0 frames and uses 0.
 **F140 · Providers can change, agents stay.** Agents never name a model. Each task asks for a role ("fast tool-caller", "summariser"), and adapters map roles to providers: Sarvam, ElevenLabs, a local runtime, or any service that speaks the chat-completions format. Changing a provider never changes an agent's name, voice or memory. *Done when:* swapping the summariser's provider leaves agents and history untouched.
 
 **F141 ◆ Route by task, quality, speed and cost.** Extends today's router: for each task, a ranked list of engines with head starts set from their recent typical and slowest times and their failures; a cost ceiling per task; quality learned from your corrections (editing dictated text counts as an error for that engine). *Done when:* with one service slowed on purpose, routing shifts away within 5 requests and back within a minute of recovery.
+
+### Phase 2 progress: first slice (13 November)
+
+You asked to start phase 2, and said the package can be up to 800 MB.
+
+**Built.**
+- **The cast and the run state machine (F13, F15, F16).** Scribe, Scout and Operator (Planner is defined for phase 3) have their name, job, silhouette, hue and working motion in `Forty.Core.Cast`. All four hues pass 3:1 contrast on black.
+  - **Runs:** each agent has an `AgentRun` whose state comes only from what the run reports, never from a timer. The one exception is the spec's: Done reads as Idle after two seconds. A paused run holds until resumed, but a failure still shows.
+  - **Words:** the label, the run log and Narrator use the same words ("Scout is using Files"). Approvals, questions and failures are announced assertively.
+- **Scribe is real today.** Dictation and call notes are its jobs, so the speech process's own reports drive its run: listening (with the microphone's level), working, done, failed. Its mark listens, works and finishes exactly when they do.
+- **The marks (F14, F38).** All ten states for all four agents, drawn by the compositor, as specified in MOTION.md 14e. The layout check captures every agent in every state, three times 0.4 s apart, so the working motions can be reviewed frame by frame.
+- **The roster strip (F20, start of F24).** At the top of the panel: each agent's mark, name and what it is doing.
+  - **Updates:** states change in place without rebuilding the panel.
+  - **Switch:** on unless the flags file says `"agents": "off"`; new installs get `"you"`, so it's on in developer builds and off in public ones.
+  - **Tested:** a scripted dictation drove Scribe through Listening, Working, Done and back to Idle, with the panel open.
+- **Tests.** Five tests cover runs, pausing, words, Scribe following the speech process, and the cast's hues and contrast.
+
+**The 800 MB package budget.** Measured on disk:
+
+| Part | Size |
+| --- | --- |
+| The app | 157 MB |
+| sherpa-onnx runtime | 30 MB |
+| Parakeet v3, int8, for local English dictation | 640 MB |
+| Omnilingual 300M, int8, for local Hindi | 349 MB |
+
+- **Plan:** ship Parakeet in the package, so English dictation works offline from the first launch.
+  - **Installed:** about 830 MB.
+  - **Download:** about 650–700 MB, since the package is compressed and the app's own files shrink well.
+- **Hindi:** the local Hindi model doesn't fit as well, so it downloads on first use. Hindi already goes to Sarvam or ElevenLabs first.
+- **Later:** Native AOT would cut the app's own 157 MB.
+
+**Next slices.**
+- **Bring the speech process into the product** (it is still the spike) with Parakeet packaged.
+- **Push-to-talk lock and click-to-talk (F28).**
+- **The agent runtime with skills and grants (2.4, F18, F21),** and Operator's first job, opening apps (F39, F40).
+- **The four spikes, which need you:**
+  - **V1:** the conversation pipeline, measured on your voice and network.
+  - **V2:** the wake word, which needs your chosen phrase.
+  - **V3:** the tool-calling model, which makes paid Sarvam calls with your key.
+  - **V4:** reading the selection in your apps.
 
 ### Phase 2 exit test
 

@@ -399,7 +399,8 @@ The full review is in docs/transitions.md.
 | Filled | white | 90% | 80% | play, primary answers, toggles that are on |
 | Tinted | accent 18% | 26% | 34% | shuffle or repeat when on |
 
-- **States:** the plate eases between states in 120 ms. On press the button gives way to 0.94 at once and returns on `press`.
+- **States:** the plate eases between states in 120 ms, and text or icon colours ease with it.
+- **Press:** the button sinks on pointer-down, on `press` (critically damped, 0.15 s), by the same depth whatever its size. The longer side gives way about 3 DIPs: 0.95 for the 56 DIP play button, 0.985 for a wide chip, never below 0.94. On release it comes back on `release` (damping 0.75, response 0.30), the smallest give.
 - **Disabled:** 35% opacity.
 - **Keyboard focus:** a 2 DIP white ring 3 DIPs outside the plate, following its shape. The pointer never shows it.
 
@@ -424,6 +425,53 @@ The full review is in docs/transitions.md.
 **Checked, not eyeballed.** `FORTY_DEMO=layout` runs the island off every screen. It renders each icon and label and measures its ink against its box, and captures the island's own window for the composed result.
 - **Result:** within one device pixel (0.8 DIP at 125%) everywhere. Positions snap to whole pixels, so half a pixel is the limit.
 - **Exception:** text can sit up to 1.2 DIP off sideways, from its letters' side-bearings.
+
+## 14e. The switch, the play/pause morph and the agents' marks (13 November)
+
+**The switch** (`IslandSwitch`, 42 × 24) is drawn by the compositor and behaves like a physical one.
+- **Press:** the knob stretches from 20 to 26 DIPs toward the side it will travel to, before anything is decided.
+- **Drag:** after 4 DIPs of movement the knob follows the finger 1:1 from where it was grabbed, and stops at either end.
+- **Release after a drag:** the switch decides by where the throw would carry the knob (projected with deceleration 0.99), not by where the knob happens to be. The knob leaves at the finger's speed on damping 0.82, response 0.30.
+- **Tap:** a tap released on the switch (10 DIPs of slack) flips it on a critically damped 0.30 s spring.
+- **Track colour:** it follows the knob's position on every frame, so half-way is half-way.
+- **Knob colour:** it inverts within a narrow window around the middle, so it never sits grey on grey.
+- **On:** filled white with a dark knob, like every "on" control in the island. The state greens stay reserved for done.
+- **Keyboard:** Space or Enter flips it.
+
+**Play and pause** are one shape that changes, not two icons that swap.
+- **The morph:** the triangle is cut down its middle, and each half squares up into a bar.
+- **Corners:** they round as the halves become bars. The cut starts square, so the triangle shows no notch.
+- **The dip:** the glyph draws in to 86% at the half-way point, so the change reads as one gesture.
+- **How it runs:** 25 precomputed frames played by the compositor on a spring (damping 0.9, response 0.30). Pressing again mid-change turns it around.
+- **Timing:** it changes on the press, not when the player answers. If the player disagrees, the rebuilt panel turns it back.
+- **Persistence:** one glyph outlives the panel and moves into each rebuilt transport, so a change runs from wherever it was.
+
+**The agents' marks** (F14, F15, F38):
+- **Drawing:** each silhouette is two or three compositor shapes in a 20 × 20 box, in the agent's hue, crisp at any size. The roster shows them at 22 DIPs.
+- **Poses:** every state is a set of spring targets (response 0.30), so states interrupt one another like everything else.
+
+| State | Pose |
+| --- | --- |
+| Idle | still, 85% |
+| Listening | opens to 108%, growing with the voice up to 122% |
+| Working | the agent's own motion, at most one cycle a second (see below) |
+| Using a tool | the working motion, with the tool's glyph on a white badge |
+| Waiting for approval | still, with an amber badge |
+| Needs an answer | still, with an amber badge and a question mark |
+| Done | the silhouette shrinks away and a green check draws itself once (0.36 s); two seconds later, back to Idle |
+| Paused | 40%, with a grey pause badge |
+| Failed | a red cross draws itself, one stroke after the other |
+| Speaking | the silhouette draws in and lifts, and a level line in the hue follows the reply beneath it |
+
+- **Working motions:**
+  - **Scribe:** the stroke writes itself, then lifts off from where it began (1.3 s).
+  - **Scout:** the ring sweeps a quarter turn and back about its centre (1.4 s).
+  - **Operator:** the square makes a quarter turn with a touch of overshoot, then rests (1.2 s).
+  - **Planner:** the bars trade places (1.6 s).
+- **When work stops:** the motion settles from wherever it is in 260 ms. A square part-way through a turn finishes the turn.
+- **Badges:** ringed in the body's colour so they sit apart from the silhouette. They pop in on `pop` and leave at once.
+- **Reduced motion:** nothing loops, every pose is reached in one step, and the check and cross appear whole.
+- **Lifetime rule (learned the hard way):** a mark owns the springs its shapes follow. If the mark object is collected while its shapes are still on screen, the expressions stop and every hidden layer shows at full opacity. Marks are always held (the roster keeps them for the island's life).
 
 ## 14. Never
 

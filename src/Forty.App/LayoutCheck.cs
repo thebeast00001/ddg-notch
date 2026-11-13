@@ -54,9 +54,56 @@ static class LayoutCheck
 
         island.DemoExpand();
         await Measure("music panel with recording", island, report, outDir);
+        // The play/pause glyph held at five points of its change, from the triangle to the bars.
+        if (island.Surface.PlayGlyph is { } glyph)
+        {
+            foreach (double t in new[] { 0, 0.25, 0.5, 0.75, 1 })
+            {
+                glyph.Pose(t);
+                await Task.Delay(200);
+                await CaptureElement($"playpause {t:0.00}", glyph.Element.Parent as FrameworkElement ?? glyph.Element, 6, outDir, report);
+            }
+            glyph.Pose(1);
+        }
         island.DemoCommand("settings");
         await Measure("settings", island, report, outDir);
+        // A switch in the poses a hand puts it through: at rest, pressed (the knob stretches toward
+        // where it will go), dragged half-way (the track's colour half-way too), pressed while on, on.
+        if (island.Surface.Switches.FirstOrDefault() is { } toggle)
+        {
+            foreach (var (name, position, stretch) in new[] { ("off", 0.0, 0.0), ("off-pressed", 0, 1), ("half", 0.5, 1), ("on-pressed", 1, 1), ("on", 1, 0) })
+            {
+                toggle.Pose(position, stretch);
+                await Task.Delay(200);
+                await CaptureElement($"switch {name}", toggle.Button, 8, outDir, report);
+            }
+        }
         island.DemoCommand("back");
+        await Task.Delay(900);
+
+        // Phase 2: Scribe's mark driven through the real speech path (dictation), with the panel open.
+        island.DemoSpeech("listening");
+        island.DemoSpeech("level 0.7");
+        await Task.Delay(700);
+        await Capture("roster scribe listening", outDir, report);
+        island.DemoSpeech("working");
+        await Task.Delay(500);
+        await Capture("roster scribe working", outDir, report);
+        island.DemoSpeech("done");
+        await Task.Delay(500);
+        await Capture("roster scribe done", outDir, report);
+        island.DemoSpeech("idle");
+        await Task.Delay(2400);
+        await Capture("roster scribe idle again", outDir, report);
+
+        // Every agent in every state, captured three times 0.4 s apart so the working motions show at different points.
+        var sheet = island.Surface.DemoMarkSheet(28);
+        await Task.Delay(600);
+        for (int i = 0; i < 3; i++)
+        {
+            await CaptureElement($"agents {i}", sheet, 10, outDir, report);
+            await Task.Delay(400);
+        }
         island.DemoCollapse();
 
         island.DemoSpeech("capture-stopped");
@@ -72,7 +119,7 @@ static class LayoutCheck
     static async Task Measure(string state, IslandController island, List<string> report, string outDir)
     {
         await Task.Delay(1600);   // everything settled
-        report.Add($"── {state}");
+        report.Add($"── {state}{(island.Expanded ? " (panel open)" : "")}");
         foreach (var probe in island.Surface.Probes())
         {
             if (probe.Ink.ActualWidth <= 0 || probe.Box.ActualWidth <= 0) continue;
@@ -106,6 +153,18 @@ static class LayoutCheck
         if (_win == null) return;
         var top = new Windows.Graphics.RectInt32(0, 0, _win.WindowPx.Width, (int)(Math.Min(_win.HeightDip, 420) * _win.Scale));
         if (!await Demo.SaveWindowAsync(_win, top, Path.Combine(outDir, $"window-{name}.png"))) report.Add($"  ({state}: window picture not captured)");
+    }
+
+    /// <summary>One element as the compositor draws it, with <paramref name="pad"/> DIPs around it, from the island's own window.</summary>
+    static async Task CaptureElement(string state, FrameworkElement element, double pad, string outDir, List<string> report)
+    {
+        if (_win == null) return;
+        var at = element.TransformToVisual(null).TransformPoint(new Point(0, 0));
+        double s = _win.Scale;
+        var rect = new Windows.Graphics.RectInt32((int)Math.Floor((at.X - pad) * s), (int)Math.Floor((at.Y - pad) * s),
+                                                  (int)Math.Ceiling((element.ActualWidth + 2 * pad) * s), (int)Math.Ceiling((element.ActualHeight + 2 * pad) * s));
+        string name = state.Replace(' ', '-').Replace(",", "");
+        if (!await Demo.SaveWindowAsync(_win, rect, Path.Combine(outDir, $"element-{name}.png"))) report.Add($"  ({state}: picture not captured)");
     }
 
     /// <summary>Where an element's visible pixels are, in its own DIPs, or null if it draws nothing.</summary>
