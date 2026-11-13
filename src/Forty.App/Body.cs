@@ -220,11 +220,22 @@ sealed class Body
         RefreshColours();
     }
 
+    /// <summary>A theme change eases over 300 ms (F11): the fill and the hairline cross over, never flash.</summary>
     void RefreshColours()
     {
-        _fill.StopAnimation("Color");
-        _fill.Color = _glassOn ? Windows.UI.Color.FromArgb(120, 0, 0, 0) : Palette.Contrast ? Palette.Fill : _tint ?? Palette.Fill;
-        _hairline.Color = Palette.Hairline;
+        var fill = _glassOn ? Windows.UI.Color.FromArgb(120, 0, 0, 0) : Palette.Contrast ? Palette.Fill : _tint ?? Palette.Fill;
+        Ease(_fill, fill);
+        Ease(_hairline, Palette.Hairline);
+    }
+
+    void Ease(CompositionColorBrush brush, Windows.UI.Color to)
+    {
+        brush.StopAnimation("Color");
+        if (MotionPolicy.Reduced || brush.Color == to) { brush.Color = to; return; }
+        var animation = _win.Compositor.CreateColorKeyFrameAnimation();
+        animation.InsertKeyFrame(1f, to);
+        animation.Duration = TimeSpan.FromMilliseconds(300);
+        brush.StartAnimation("Color", animation);
     }
 
     /// <summary>
@@ -256,8 +267,19 @@ sealed class Body
         double now = Clock.Now;
         if (shape == Shape && W.Model.IsSettled(now) && H.Model.IsSettled(now) && Top.Model.IsSettled(now)) return;
         Shape = shape;
+        Moved?.Invoke();
         GrowRegion(shape);
         if (SatelliteShown) BuildBridge();   // a taller or shorter capsule end needs its own neck
+        if (Kick is { } kick)
+        {
+            // Released from a drag: the height carries the finger's speed on the spring for throws.
+            Kick = null;
+            W.To(shape.Width, Springs.Thrown);
+            H.Throw(shape.Height, Springs.Thrown, kick);
+            R.To(shape.Radius, Springs.Thrown);
+            Top.To(shape.Top, Springs.Thrown);
+            return;
+        }
         W.To(shape.Width, spring);
         H.To(shape.Height, spring);
         R.To(shape.Radius, spring);
@@ -317,6 +339,31 @@ sealed class Body
         if (version == _regionVersion) SnapRegion();   // otherwise another morph started meanwhile
     }
 
+    /// <summary>
+    /// Direct manipulation (F12): the body is wherever the finger puts it, between two shapes. Height
+    /// follows the finger exactly (with resistance past the ends, worked out by the gesture); width,
+    /// corner and top follow the same progress. Every running term is dropped, as MOTION.md 6 asks.
+    /// </summary>
+    public void Follow(BodyShape from, BodyShape to, double height, double progress)
+    {
+        double Lerp(double a, double b) => a + (b - a) * progress;
+        Shape = new BodyShape("drag", Lerp(from.Width, to.Width), height, Lerp(from.Radius, to.Radius), Lerp(from.Top, to.Top));   // so any next morph runs, even back to where it started
+        H.Set(height);
+        W.Set(Lerp(from.Width, to.Width));
+        R.Set(Lerp(from.Radius, to.Radius));
+        Top.Set(Lerp(from.Top, to.Top));
+    }
+
+    /// <summary>A morph started (F9 measures each one).</summary>
+    public event Action? Moved;
+
+    /// <summary>Makes room for a drag between two shapes before it starts.</summary>
+    public void PrepareFollow(BodyShape from, BodyShape to) =>
+        GrowRegion(new BodyShape("drag", Math.Max(from.Width, to.Width), Math.Max(from.Height, to.Height) + 80, Math.Max(from.Radius, to.Radius), Math.Max(from.Top, to.Top)));
+
+    /// <summary>A drag released: the next morph carries the finger's speed (DIPs per second, downward positive).</summary>
+    public double? Kick { get; set; }
+
     /// <summary>After the window moved to another display (F7, F8): its width and inset in DIPs may differ slightly.</summary>
     public void Relayout()
     {
@@ -366,6 +413,8 @@ static class Palette
     public static Windows.UI.Color Secondary => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.WindowText) : Ink(153, 255, 255, 255);
     public static Windows.UI.Color Tertiary => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.WindowText) : Ink(102, 255, 255, 255);
     public static Windows.UI.Color Fill => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.Window) : Ink(255, 0, 0, 0);
+    /// <summary>Text and glyphs on a button filled with <see cref="Primary"/> (play, an "on" toggle): black on white, or the window colour in a contrast theme.</summary>
+    public static Windows.UI.Color OnPrimary => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.Window) : Ink(255, 0, 0, 0);
     /// <summary>10% white on Ink; a solid border in a contrast theme.</summary>
     public static Windows.UI.Color Hairline => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.WindowText) : Ink(26, 255, 255, 255);
 

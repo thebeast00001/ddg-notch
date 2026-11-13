@@ -85,6 +85,33 @@ static class Demo
         await Still("settings-end", 300, tall);
         await Film("settings-back", () => island.DemoCommand("back"), 700, rect);
         await Film("panel-close", island.DemoCollapse, 600, rect);
+        await Task.Delay(500);
+
+        // F12: a finger pulls the island open (the body follows it, then the release carries on), and
+        // a second pull is let go too early with a flick back up, so it springs back.
+        await Film("pull-open", () => _ = island.DemoPull(30, Enumerable.Range(1, 12).Select(i => 30.0 + i * 16).ToList()), 900, rect);
+        island.DemoCollapse();
+        await Task.Delay(700);
+        await Film("pull-cancel", () => _ = island.DemoPull(30, Enumerable.Range(1, 8).Select(i => 30.0 + i * 14).Concat(Enumerable.Range(1, 5).Select(i => 142.0 - i * 18)).ToList()), 900, rect);
+        await Task.Delay(400);
+
+        // F11: a contrast theme turning on and off with the panel open: colours ease, content dips and returns.
+        island.DemoExpand();
+        await Task.Delay(700);
+        await Film("contrast-on", () => island.DemoContrast(true), 520, rect);
+        await Still("contrast-panel", 200);
+        await Film("contrast-off", () => island.DemoContrast(null), 520, rect);
+        island.DemoCollapse();
+        await Task.Delay(600);
+
+        // F8: moving between displays, shown here moving onto the same display: sliver, fade, grow.
+        await Film("display-move", island.DemoMove, 700, rect);
+        await Task.Delay(400);
+
+        // F7: a mirror of the island on another display, shown here lower on the same display.
+        island.DemoMirror(true, (int)(260 * win.Scale));
+        await Still("mirror", 900, tall);
+        island.DemoMirror(false, 0);
 
         // Screen-share hiding (F134): with it on, our own screen capture (the same mechanism screen
         // sharing uses) must not see the island at all.
@@ -184,6 +211,74 @@ static class Demo
         await Still("rest-again", 300);
         await Task.Delay(200);
         watchdog.Dispose();
+        Ambient.StopAll();
+        Application.Current.Exit();
+    }
+
+    /// <summary>The nine states of the F2 review, in the order of the table in docs/transitions.md.</summary>
+    public static readonly string[] States = { "rest", "notification", "approval", "music", "lyrics", "listening", "charging", "panel", "dot" };
+
+    /// <summary>
+    /// FORTY_DEMO=transitions: every change between the nine states, filmed (72 films, F2). Each film
+    /// starts from a settled state and records every composed frame of the change; the review sheets
+    /// and the table in docs/transitions.md are made from them.
+    /// </summary>
+    public static async Task TransitionsAsync(IslandWindow win, IslandController island, string outDir)
+    {
+        Directory.CreateDirectory(outDir);
+        var watchdog = new Timer(_ => Environment.Exit(3), null, 600_000, Timeout.Infinite);
+        var rect = new RectInt32(win.WindowPx.X - win.MonitorPx.X, 0, win.WindowPx.Width, (int)(360 * win.Scale));
+        var q = island.Queue;
+        await SaveAsync(win, rect, Path.Combine(outDir, "warmup.png"));
+        byte[] ocean = await CoverAsync(new[] { (28, 92, 214), (40, 200, 190), (88, 40, 170) }, "SEA");
+        var song = new NowPlaying("demo.player", "Demo Player", "Glass Tides", "Northbound Echo", "Made-Up Album", true, true, true, false, RepeatMode.Off,
+            new PlaybackClock(TimeSpan.FromSeconds(4.2), DateTimeOffset.Now, true, TimeSpan.FromSeconds(214)));
+        var buds = new BluetoothState("demo-buds", "Galaxy Buds3 Pro", DeviceKind.Audio, false, null);
+        island.DemoFlag(MusicDirector.ColoursFlag, true);
+        island.DemoPower(new PowerSnapshot(71, true, true, false, 30_000, 35_700, 50_300, 54_000));
+
+        // Puts the island in a state: whatever the last state put up is taken down in the same moment.
+        string last = "rest";
+        void Set(string state)
+        {
+            island.DemoCollapse();
+            island.DemoMode(Mode.Normal);
+            foreach (var key in new[] { "approval.git", DeviceRules.Key("demo-buds"), PowerRules.ChargingKey, SpeechSession.DictationKey, "news.dot" }) q.Remove(key, Clock.Now);
+            island.DemoSpeech("idle");
+            bool music = state is "music" or "lyrics" or "panel";
+            // Opening the panel over lyrics keeps lyrics on, as it would for you; every other change sets it.
+            if (!(state == "panel" && last == "lyrics")) island.DemoFlag(MusicDirector.LyricsFlag, state == "lyrics");
+            last = state;
+            if (music) island.DemoMusic(song with { Clock = new PlaybackClock(TimeSpan.FromSeconds(4.2), DateTimeOffset.Now, true, TimeSpan.FromSeconds(214)) }, ocean, Lyrics);
+            else island.DemoMusic(null, null, null);
+            switch (state)
+            {
+                case "notification": q.Post(DeviceRules.Change(buds, buds with { Connected = true, Battery = 95 })! with { Lifetime = TimeSpan.FromSeconds(30) }, Clock.Now); break;
+                case "approval":
+                    q.Post(Activity.Live("approval.git", "agent", Priority.ActNow, "Approve git push?", null, Glyphs.Info, "Needs your approval: git push to main", Accent.NeedsYou)
+                        with { Actions = new ActivityActions("Approve", "noop", "Not now", "noop") }, Clock.Now);
+                    break;
+                case "listening": island.DemoSpeech("listening"); break;
+                case "charging": q.Post(Activity.Event(PowerRules.ChargingKey, "power", Priority.Ambient, "Charging", null, Glyphs.BatteryCharging(71), "Charging, 71 percent", Accent.Done) with { Lifetime = TimeSpan.FromSeconds(30) }, Clock.Now); break;
+                case "panel": island.DemoExpand(); break;
+                case "dot":
+                    island.DemoMode(Mode.Focus);
+                    q.Post(Activity.Event("news.dot", "news", Priority.Ambient, "News", null, Glyphs.Info, "News") with { Lifetime = TimeSpan.FromSeconds(30) }, Clock.Now);
+                    break;
+            }
+        }
+
+        string? only = Environment.GetEnvironmentVariable("FORTY_TRANSITIONS_FROM");   // to film one row of the table
+        foreach (string from in States)
+            foreach (string to in States)
+            {
+                if (from == to || (only != null && from != only)) continue;
+                Set(from);
+                await Task.Delay(from is "music" or "lyrics" or "panel" ? 1300 : 900);
+                await FilmAsync(win, rect, Path.Combine(outDir, $"t-{from}-{to}.png"), () => Set(to), 520);
+            }
+        watchdog.Dispose();
+        Ambient.StopAll();
         Application.Current.Exit();
     }
 
@@ -202,6 +297,7 @@ static class Demo
         await Task.Delay(10_000);
         App.Log(Environment.GetEnvironmentVariable("FORTY_OUT"), $"springs: {CompositionSpring.Created} created, {CompositionSpring.Running} running");
         await Task.Delay(35_000);
+        Ambient.StopAll();
         Application.Current.Exit();
     }
 
@@ -295,11 +391,15 @@ static class Demo
         Quiet(session);
         double started = 0;
         bool recording = false;
+        string? error = null;
+        int arrived = 0;
         pool.FrameArrived += (p, _) =>
         {
             using var frame = p.TryGetNextFrame();
+            arrived++;
             if (frame == null || !recording) return;
-            try { lock (frames) frames.Add((Clock.Now - started, Crop(device, frame, rect))); } catch { }
+            try { lock (frames) frames.Add((Clock.Now - started, Crop(device, frame, rect))); }
+            catch (Exception ex) { error ??= $"{ex.GetType().Name} 0x{ex.HResult:X8}"; }
         };
         session.StartCapture();
         await Task.Delay(250);                  // let the capture start before the change
@@ -312,6 +412,7 @@ static class Demo
 
         List<(double T, CanvasRenderTarget Image)> kept;
         lock (frames) kept = frames.Count <= 12 ? frames.ToList() : Enumerable.Range(0, 12).Select(i => frames[(int)Math.Round(i * (frames.Count - 1) / 11.0)]).ToList();
+        App.Log(Path.GetDirectoryName(path), $"film {Path.GetFileName(path)}: {arrived} frames arrived, {frames.Count} kept{(error != null ? ", first error " + error : "")}");
         if (kept.Count == 0) return false;
         int label = 64;
         using var sheet = new CanvasRenderTarget(device, rect.Width + label, rect.Height * kept.Count, 96);

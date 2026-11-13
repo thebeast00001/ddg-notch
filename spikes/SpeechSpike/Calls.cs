@@ -281,6 +281,9 @@ sealed class CallWatcher
 
     AudioSession? FindCall()
     {
+        // Between calls the cheap check is enough: no microphone in use, no call (F128). With an app
+        // filter (the tests' stand-in for a call app) the full snapshot is always taken.
+        if (_appFilter == null && !AudioSessions.AnyoneRecording()) return null;
         var sessions = AudioSessions.Snapshot();
         var call = AudioSessions.FindCall(sessions, _appFilter);
         // For testing: a named app that is merely playing sound counts as a call.

@@ -43,7 +43,7 @@ sealed class MusicDirector
         _ui = DispatcherQueue.GetForCurrentThread();
         _lineTimer = _ui.CreateTimer();
         _lineTimer.IsRepeating = false;
-        _lineTimer.Tick += (_, _) => Resync();
+        _lineTimer.Tick += (_, _) => Guard.Run(Resync, "lyric line");
     }
 
     public bool LyricsOn => _flags.IsOn(LyricsFlag);

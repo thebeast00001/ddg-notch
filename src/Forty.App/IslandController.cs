@@ -42,6 +42,7 @@ sealed class IslandController : IDisposable
     string? _lastLookWhy;
     readonly SecretStore _keys = new(Path.Combine(App.Home, "keys.bin"));
     readonly DisplayFollower _follower;
+    readonly Dictionary<string, MirrorIsland> _mirrors = new();
     readonly DispatcherQueueTimer _followCheck;
     bool _moving;
     bool? _helloReady;
@@ -75,6 +76,7 @@ sealed class IslandController : IDisposable
         _ui = DispatcherQueue.GetForCurrentThread();
         _body = new Body(win);
         _surface = new IslandSurface(win, _body);
+        _body.Moved += () => FramePacing.Moving(Meter, 0.6);
         _music = new MusicDirector(flags, new LyricsClient(Path.Combine(App.Home, "lyrics")));
         Screen = new ScreenAdapter(win.MonitorHandle);
 
@@ -95,16 +97,22 @@ sealed class IslandController : IDisposable
         root.PointerMoved += OnMoved;
         root.PointerExited += OnExited;
         root.PointerPressed += OnPressed;
+        root.PointerReleased += (_, e) => { if (_pull != null) { EndPull(); e.Handled = true; } };
+        root.PointerCanceled += (_, _) => EndPull(cancelled: true);
+        root.PointerCaptureLost += (_, _) => EndPull(cancelled: true);
         root.KeyDown += OnKey;
         win.Hotkey += () => { if (_expanded) Collapse(); else Expand(takeFocus: true); };
     }
+
+    /// <summary>Runs work on the UI thread, guarded (see <see cref="Guard"/>).</summary>
+    bool Ui(Action work) => _ui.TryEnqueue(() => Guard.Run(work, work.Method.Name));
 
     DispatcherQueueTimer Timer(int milliseconds, Action tick)
     {
         var timer = _ui.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(milliseconds);
         timer.IsRepeating = false;
-        timer.Tick += (_, _) => tick();
+        timer.Tick += (_, _) => Guard.Run(tick, "timer");
         return timer;
     }
 
@@ -112,28 +120,30 @@ sealed class IslandController : IDisposable
     public void Start(bool adapters = true)
     {
         ApplyLook();
-        _flags.Changed += () => _ui.TryEnqueue(() => { _music.OnFlagsChanged(); ApplyLook(); });
-        _win.SettingsChanged += () => _ui.TryEnqueue(ApplyLook);
-        _settings.Changed += () => _ui.TryEnqueue(() => Render(Queue.View));
-        _win.DisplaysChanged += () => _ui.TryEnqueue(PlaceOnDisplay);
-        _flags.Changed += () => _ui.TryEnqueue(() => { if (!_flags.IsOn("follow-display")) PlaceOnDisplay(); });
+        _flags.Changed += () => Ui(() => { _music.OnFlagsChanged(); ApplyLook(); });
+        _win.SettingsChanged += () => Ui(ApplyLook);
+        _settings.Changed += () => Ui(() => Render(Queue.View));
+        _win.DisplaysChanged += () => Ui(PlaceOnDisplay);
+        _flags.Changed += () => Ui(() => { if (!_flags.IsOn("follow-display")) PlaceOnDisplay(); else SyncMirrors(); });
         _win.Show();
+        SyncMirrors();   // after the island shows, so the mirrors show with it
         _win.RegisterHotkey();
         if (_flags.IsOn("diagnostics")) StartResourceSampler();
         // Warm the surface once, out of sight, while nothing is showing.
-        var warm = Timer(1200, () => { if (Queue.View.Primary == null && !_expanded) _surface.Warm(); _ = HelloReadyAsync(); });
+        bool warmUp = Environment.GetEnvironmentVariable("FORTY_WARM") != "0";   // FORTY_WARM=0 is for measuring what the warm-up costs
+        var warm = Timer(1200, () => { if (warmUp && Queue.View.Primary == null && !_expanded) _surface.Warm(); _ = HelloReadyAsync(); });
         warm.Start();
         if (!adapters) return;
 
-        Power.Changed += snapshot => _ui.TryEnqueue(() => OnPower(snapshot));
-        Power.ModeChanged += _ => _ui.TryEnqueue(() => { UpdateMode(); ApplyLook(); SendPolicy(); });
-        Media.Changed += playing => _ui.TryEnqueue(() => OnMedia(playing));
-        Media.PositionChanged += clock => _ui.TryEnqueue(() => _music.OnPosition(clock));
-        Focus.Changed += _ => _ui.TryEnqueue(UpdateMode);
-        Screen.Changed += () => _ui.TryEnqueue(UpdateMode);
-        Screen.FrontWindowChanged += hwnd => _ui.TryEnqueue(() => OnFrontWindow(hwnd));
-        Bluetooth.Changed += (before, after) => _ui.TryEnqueue(() => OnBluetooth(before, after));
-        Audio.OutputChanged += (name, worn) => _ui.TryEnqueue(() => OnOutput(name, worn));
+        Power.Changed += snapshot => Ui(() => OnPower(snapshot));
+        Power.ModeChanged += _ => Ui(() => { UpdateMode(); ApplyLook(); SendPolicy(); });
+        Media.Changed += playing => Ui(() => OnMedia(playing));
+        Media.PositionChanged += clock => Ui(() => _music.OnPosition(clock));
+        Focus.Changed += _ => Ui(UpdateMode);
+        Screen.Changed += () => Ui(UpdateMode);
+        Screen.FrontWindowChanged += hwnd => Ui(() => OnFrontWindow(hwnd));
+        Bluetooth.Changed += (before, after) => Ui(() => OnBluetooth(before, after));
+        Audio.OutputChanged += (name, worn) => Ui(() => OnOutput(name, worn));
         ListenToSpeech();
         foreach (var adapter in Adapters) adapter.Start();
 
@@ -166,7 +176,41 @@ sealed class IslandController : IDisposable
         Screen.WatchMonitor(_win.MonitorHandle);
         _follower.PlacedOn(Id(area));
         _lastPanel = null;
+        SyncMirrors();
         Render(Queue.View);
+    }
+
+    /// <summary>
+    /// "Show on every display" (F7): a mirror of the island on each display other than the one the
+    /// island is on. Following the display you're using (F8) and showing everywhere exclude each other.
+    /// </summary>
+    void SyncMirrors(Microsoft.UI.Windowing.DisplayArea? demoArea = null, int demoOffsetPx = 0)
+    {
+        bool every = _flags.IsOn("every-display") && !_flags.IsOn("follow-display");
+        var all = Microsoft.UI.Windowing.DisplayArea.FindAll();
+        var present = new List<Microsoft.UI.Windowing.DisplayArea>();
+        for (int i = 0; i < all.Count; i++) present.Add(all[i]);
+        string main = _win.DisplayIdValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var wanted = every ? present.Where(a => Id(a) != main).ToList() : new();
+        if (demoArea != null) wanted.Add(demoArea);
+        foreach (var (id, mirror) in _mirrors.ToList())
+            if (!wanted.Any(a => Id(a) == id)) { mirror.Dispose(); _mirrors.Remove(id); }
+        foreach (var area in wanted)
+        {
+            if (_mirrors.ContainsKey(Id(area))) continue;
+            var mirror = new MirrorIsland(_win, area, App.WindowWidth, App.WindowHeight, demoArea == area ? demoOffsetPx : 0);
+            mirror.Pressed += m => Ui(() => BringHere(m.DisplayId));
+            _mirrors[Id(area)] = mirror;
+            if (_win.IsVisible) mirror.Show();
+        }
+    }
+
+    /// <summary>A mirror was pressed: the island itself comes to that display, and a mirror takes its old place.</summary>
+    void BringHere(string displayId)
+    {
+        var all = Microsoft.UI.Windowing.DisplayArea.FindAll();
+        for (int i = 0; i < all.Count; i++)
+            if (Id(all[i]) == displayId) { _ = MoveTo(all[i]); return; }
     }
 
     /// <summary>
@@ -210,6 +254,8 @@ sealed class IslandController : IDisposable
             _body.Relayout();
             _body.Jump(BodyShape.Sliver);
             Screen.WatchMonitor(_win.MonitorHandle);
+            _follower.PlacedOn(Id(area));
+            SyncMirrors();
             Fade(root, 1, 120);
             _lastPanel = null;
             Render(Queue.View);   // grows from the sliver into whatever it should show
@@ -231,13 +277,17 @@ sealed class IslandController : IDisposable
     /// <summary>The look that depends on settings: contrast theme (F11), Glass (S6), screen-share hiding (F134).</summary>
     void ApplyLook()
     {
-        bool contrast = Native.HighContrastOn() || Environment.GetEnvironmentVariable("FORTY_CONTRAST") == "1";
-        _body.SetContrast(contrast);
+        bool contrast = _demoContrast ?? (Native.HighContrastOn() || Environment.GetEnvironmentVariable("FORTY_CONTRAST") == "1");
+        bool themeChanged = contrast != Palette.Contrast;
+        _body.SetContrast(contrast);   // the body's colours ease over 300 ms
         bool wantGlass = (_flags.IsOn("glass") || Environment.GetEnvironmentVariable("FORTY_GLASS") == "1") && Policy.Glass && !contrast;
         _body.SetGlass(wantGlass);
         _win.SetExcludedFromCapture(_flags.IsOn("hide-from-capture"));
         _lookApplied = null;
-        Render(Queue.View);
+        // A theme change (F11): the content dips out for the first 120 ms, is rebuilt in the new
+        // colours, and is back by the end, an open panel included. Otherwise it is redrawn in place.
+        if (themeChanged) _surface.Retint(() => { _lastPanel = null; Render(Queue.View); });
+        else Render(Queue.View);
     }
 
     // ── Sources ──
@@ -280,10 +330,10 @@ sealed class IslandController : IDisposable
     /// </summary>
     void ListenToSpeech()
     {
-        Speech.Line += line => _ui.TryEnqueue(() => OnSpeech(_speech.Apply(line, Clock.Now)));
-        Speech.Connected += () => _ui.TryEnqueue(() => { _policySent = null; SendPolicy(); Speech.Send("state?"); });
-        Speech.Lost += running => _ui.TryEnqueue(() => OnSpeech(running ? _speech.LinkLost(Clock.Now) : _speech.ProcessGone()));
-        Speech.ProcessExited += () => _ui.TryEnqueue(() => OnSpeech(_speech.ProcessGone()));
+        Speech.Line += line => Ui(() => OnSpeech(_speech.Apply(line, Clock.Now)));
+        Speech.Connected += () => Ui(() => { _policySent = null; SendPolicy(); Speech.Send("state?"); });
+        Speech.Lost += running => Ui(() => OnSpeech(running ? _speech.LinkLost(Clock.Now) : _speech.ProcessGone()));
+        Speech.ProcessExited += () => Ui(() => OnSpeech(_speech.ProcessGone()));
     }
 
     /// <summary>Applies what the speech process reported: the level goes straight to the meter, the rest through the queue.</summary>
@@ -335,7 +385,7 @@ sealed class IslandController : IDisposable
     void Defer(Action show)
     {
         int version = ++_contentVersion;
-        _ui.TryEnqueue(DispatcherQueuePriority.Low, () => { if (version == _contentVersion) show(); });
+        _ui.TryEnqueue(DispatcherQueuePriority.Low, () => Guard.Run(() => { if (version == _contentVersion) show(); }, "content"));
     }
 
     void UpdateMode()
@@ -373,8 +423,8 @@ sealed class IslandController : IDisposable
         bool hide = view.Marks.Count == 0 &&
                     ((Screen.Front == FrontState.FullScreen && view.Primary == null && view.Dots.Count == 0) ||
                      (chosenApp && view.Primary?.Priority != Priority.ActNow));
-        if (hide) { if (_win.IsVisible) _win.Hide(); MusicLook(false); return; }
-        if (!_win.IsVisible) _win.Show();
+        if (hide) { if (_win.IsVisible) { _win.Hide(); foreach (var m in _mirrors.Values) m.Hide(); } MusicLook(false); return; }
+        if (!_win.IsVisible) { _win.Show(); foreach (var m in _mirrors.Values) m.Show(); }
 
         bool music = view.Primary?.Key == MediaAdapter.ActivityKey && _music.View != null;
         MusicLook(music);
@@ -590,6 +640,7 @@ sealed class IslandController : IDisposable
             $"Memory {self.PrivateMemorySize64 / 1048576.0:0} MB" + (Meter.Summary("cpu.percent") is { } cpu ? $" · CPU {cpu.P50:0.0}% of a core over a minute" : ""),
             Line("render.ms", "Drawing a change", "ms", "0.0"),
             Line("expand.ms", "Building the panel", "ms"),
+            PacingLine(),
             $"Sources: {adapters}",
             crashes == 0 ? "No crash reports on this PC" : $"{crashes} crash report{(crashes == 1 ? "" : "s")} on this PC (no personal data in them)",
         };
@@ -598,7 +649,17 @@ sealed class IslandController : IDisposable
             _settings.Alerts.LowLevels, _settings.Alerts.FullLevel, _settings.Hidden, Screen.FrontProgram,
             Bluetooth.Devices.Select(d => (d, _settings.IsQuiet(d.Id))).ToList(), diagnostics,
             typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0",
-            _flags.IsOn("follow-display"), Microsoft.UI.Windowing.DisplayArea.FindAll().Count, _keys.Names, _helloReady == true);
+            _flags.IsOn("follow-display"), Microsoft.UI.Windowing.DisplayArea.FindAll().Count, _keys.Names, _helloReady == true,
+            _flags.IsOn("every-display"));
+    }
+
+    /// <summary>F9 in words: the display's rate, and how many refreshes motion missed.</summary>
+    string PacingLine()
+    {
+        string rate = FramePacing.Hz is { } hz ? $"Display {hz:0} Hz" : "Display rate unknown";
+        return Meter.Summary("motion.missed") is { } missed
+            ? $"{rate} · motion typically missed {missed.P50:0} frames per move, at most {missed.P95:0}"
+            : $"{rate} · motion not measured yet";
     }
 
     /// <summary>The mode and why, in plain words, for the panel's footer (F132–F134 sub-feature).</summary>
@@ -661,7 +722,7 @@ sealed class IslandController : IDisposable
             case "repeat":
                 _ = Media.SetRepeatAsync(playing?.Repeat switch { RepeatMode.Off => RepeatMode.List, RepeatMode.List => RepeatMode.Track, _ => RepeatMode.Off });
                 break;
-            case "quit": Application.Current.Exit(); break;
+            case "quit": Ambient.StopAll(); Application.Current.Exit(); break;
             // Answers for the speech process, in its own words.
             case "call-accept": Speech.Send("accept"); break;
             case "call-decline":
@@ -674,7 +735,7 @@ sealed class IslandController : IDisposable
                 Queue.Remove(SpeechSession.CallKey, Clock.Now);
                 break;
             case "settings":
-                if (_helloReady == null) _ = HelloReadyAsync().ContinueWith(_ => _ui.TryEnqueue(() => { if (_settingsOpen) Expand(takeFocus: false); }));
+                if (_helloReady == null) _ = HelloReadyAsync().ContinueWith(_ => Ui(() => { if (_settingsOpen) Expand(takeFocus: false); }));
                 _settingsOpen = true;
                 _lastPanel = null;
                 Expand(takeFocus: false);
@@ -770,6 +831,7 @@ sealed class IslandController : IDisposable
     void OnMoved(object sender, PointerRoutedEventArgs e)
     {
         var at = e.GetCurrentPoint(_win.Root).Position;
+        if (_pull != null) { MovePull(at.Y); return; }
         if (_inside && !_expanded && !MotionPolicy.Reduced)
         {
             double cx = _win.WidthDip / 2, cy = _body.Shape.Top + _win.TopInsetDip + _body.Shape.Height / 2;
@@ -793,12 +855,84 @@ sealed class IslandController : IDisposable
         if (Queue.View.Primary == null) _body.GoTo(RestShape, Springs.Quick);
     }
 
-    /// <summary>A click never waits: toggle at once. Presses on the panel's own buttons are theirs.</summary>
+    /// <summary>
+    /// A click never waits: toggle at once. A finger or pen may be starting a drag, so it waits for 10
+    /// DIPs of movement: a tap toggles on release, a drag pulls the island open or pushes it closed
+    /// (F12). Presses on the panel's own buttons are theirs.
+    /// </summary>
     void OnPressed(object sender, PointerRoutedEventArgs e)
     {
         if (e.Handled) return;
         _dwell.Stop();
-        if (_expanded) Collapse(); else Expand(takeFocus: false);
+        if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse)
+        {
+            if (_expanded) Collapse(); else Expand(takeFocus: false);
+            return;
+        }
+        _touch = true;
+        _win.Root.CapturePointer(e.Pointer);
+        BeginPull(e.GetCurrentPoint(_win.Root).Position.Y);
+        e.Handled = true;
+    }
+
+    // ── Pulling with a finger or pen (F12, MOTION.md 6) ──
+
+    PullGesture? _pull;
+    BodyShape _pullFrom, _pullTo;
+
+    void BeginPull(double y)
+    {
+        if (_settingsOpen) return;
+        _pullFrom = _body.Shape;
+        _pullTo = _expanded ? ClosedShape() : BodyShape.Panel with { Height = PanelGuess() };
+        _pull = new PullGesture(y, _body.H.Current, _pullTo.Height, Clock.Now);
+    }
+
+    void MovePull(double y)
+    {
+        if (_pull?.Move(y, Clock.Now) is not { } height) return;
+        if (_body.Shape.Name != "drag") _body.PrepareFollow(_pullFrom, _pullTo);
+        _body.Follow(_pullFrom, _pullTo, height, _pull.Progress(height));
+    }
+
+    void EndPull(bool cancelled = false)
+    {
+        if (_pull is not { } pull) return;
+        _pull = null;
+        var (tap, commit, velocity) = pull.Release(Clock.Now);
+        if (cancelled && tap) return;
+        if (tap) { if (_expanded) Collapse(); else Expand(takeFocus: false); return; }
+        _body.Kick = velocity;   // whichever way it goes, it carries the finger's speed
+        commit &= !cancelled;
+        if (_expanded && commit) Collapse();                              // pushed closed
+        else if (_expanded) _body.GoTo(_pullFrom, Springs.Thrown);       // let go too early: back to the panel it was
+        else if (commit) Expand(takeFocus: false);                        // pulled open
+        else Render(Queue.View);                                          // let go too early: back to the capsule
+    }
+
+    /// <summary>The shape the island has when the panel is closed: the capsule for what shows, or rest.</summary>
+    BodyShape ClosedShape()
+    {
+        var view = Queue.View;
+        if (view.Primary is not { } primary) return RestShape;
+        if (primary.Key == MediaAdapter.ActivityKey && _music.LyricsActive)
+            return IslandSurface.LyricShape(_music.Line.Instrumental ? "" : _music.Line.Text);
+        return IslandSurface.ShapeFor(ContentFor(primary), _touch);
+    }
+
+    double PanelGuess()
+    {
+        string kind = _music.View != null && (Queue.View.Primary == null || Queue.View.Primary.Key == MediaAdapter.ActivityKey) ? "music" : "other";
+        return _panelHeights.TryGetValue(kind, out double known) ? known : kind == "music" ? 300 : 190;
+    }
+
+    // ── For the scripted demo: a finger pulling down (or up) along these points, 16 ms apart, then letting go ──
+
+    public async Task DemoPull(double startY, IReadOnlyList<double> ys)
+    {
+        BeginPull(startY);
+        foreach (double y in ys) { MovePull(y); await Task.Delay(16); }
+        EndPull();
     }
 
     void OnKey(object sender, KeyRoutedEventArgs e)
@@ -849,6 +983,16 @@ sealed class IslandController : IDisposable
     public void DemoScrollSettings() => _surface.ScrollSettingsToEnd();
     public void DemoSpeech(string line) => OnSpeech(_speech.Apply(line, Clock.Now));
     public void DemoDisplaysChanged() => PlaceOnDisplay();
+    public void DemoContrast(bool? on) { _demoContrast = on; ApplyLook(); }
+    public void DemoMove() => _ = MoveTo(Microsoft.UI.Windowing.DisplayArea.Primary);
+    bool? _demoContrast;
+
+    /// <summary>For the scripted demo: a mirror on this same display, lower down, to see the copy work without a second monitor.</summary>
+    public void DemoMirror(bool on, int offsetPx)
+    {
+        if (on) SyncMirrors(Microsoft.UI.Windowing.DisplayArea.Primary, offsetPx);
+        else SyncMirrors();
+    }
 
     public string DemoSpeechState => $"link: {Speech.Status.Reason}; connected {_speech.Connected}; unconfirmed {_speech.Unconfirmed}";
 

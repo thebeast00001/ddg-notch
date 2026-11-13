@@ -124,7 +124,7 @@ sealed class IslandWindow : IDisposable
     /// Puts the island at the top centre of a display, at that display's scaling, below a taskbar
     /// docked at the top (F7). Called at start, when displays change, and when it follows you (F8).
     /// </summary>
-    public void Place(DisplayArea area)
+    public void Place(DisplayArea area, int demoOffsetPx = 0)
     {
         MonitorPx = area.OuterBounds;
         DisplayIdValue = area.DisplayId.Value;
@@ -135,7 +135,7 @@ sealed class IslandWindow : IDisposable
 
         int w = (int)Math.Ceiling(_widthDip * Scale), h = (int)Math.Ceiling(_heightDip * Scale) + TopInsetPx;
         if ((MonitorPx.Width - w) % 2 != 0) w++;   // keep the centre on a whole pixel
-        WindowPx = new RectInt32(MonitorPx.X + (MonitorPx.Width - w) / 2, top - TopInsetPx, w, h);
+        WindowPx = new RectInt32(MonitorPx.X + (MonitorPx.Width - w) / 2, top - TopInsetPx + demoOffsetPx, w, h);
         Window.AppWindow.MoveAndResize(WindowPx);
     }
 
@@ -229,7 +229,18 @@ sealed class IslandWindow : IDisposable
         int left = (WindowPx.Width - w) / 2;
         Native.SetWindowRgn(Hwnd, Native.CreateRectRgn(left, TopInsetPx, left + w, TopInsetPx + h), true);   // the system owns the region from here
         RegionPx = new RectInt32(left, TopInsetPx, w, h);
+        RegionChanged?.Invoke();
     }
+
+    /// <summary>A mirror's region, copied from the main island's (F7).</summary>
+    public void SetRegionPx(RectInt32 region)
+    {
+        Native.SetWindowRgn(Hwnd, Native.CreateRectRgn(region.X, region.Y, region.X + region.Width, region.Y + region.Height), true);
+        RegionPx = region;
+    }
+
+    /// <summary>The region changed (mirrors on other displays follow it).</summary>
+    public event Action? RegionChanged;
 
     /// <summary>The current region, in pixels relative to the window's top-left corner.</summary>
     public RectInt32 RegionPx { get; private set; }

@@ -49,7 +49,7 @@ static class Ambient
         if (_timer == null)
         {
             _timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
-            _timer.Tick += (_, _) => { double now = Now; foreach (var t in Ticks.ToArray()) t(now); };
+            _timer.Tick += (_, _) => { double now = Now; foreach (var t in Ticks.ToArray()) Guard.Run(() => t(now), "ambient"); };
         }
         _timer.Interval = TimeSpan.FromSeconds(1.0 / _hz);
         if (!_timer.IsRunning) _timer.Start();
@@ -59,6 +59,13 @@ static class Ambient
     {
         Ticks.Remove(tick);
         if (Ticks.Count == 0) _timer?.Stop();   // nothing ambient: no timer, no frames
+    }
+
+    /// <summary>Quitting: no more steps, so nothing touches the compositor while it shuts down.</summary>
+    public static void StopAll()
+    {
+        Ticks.Clear();
+        _timer?.Stop();
     }
 
     /// <summary>A gentle ease in and out between two keys (the shape the compositor curves had).</summary>

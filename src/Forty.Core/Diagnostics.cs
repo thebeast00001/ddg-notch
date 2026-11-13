@@ -16,7 +16,7 @@ public sealed class Meter
     public static readonly IReadOnlySet<string> Names = new HashSet<string>
     {
         "render.ms", "expand.ms", "collapse.ms", "start.ms", "cpu.percent", "memory.mb", "frames.dropped",
-        "service.ms", "dictation.ms",
+        "service.ms", "dictation.ms", "display.hz", "motion.missed", "motion.fps",
     };
 
     const int MaxSamplesPerName = 512;

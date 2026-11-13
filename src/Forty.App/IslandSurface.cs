@@ -54,6 +54,7 @@ sealed partial class IslandSurface
     readonly IslandWindow _win;
     readonly Body _body;
     readonly Grid _layer;
+    readonly ContentBlur _blur;
     readonly CapsuleRow[] _rows;
     readonly LyricRow[] _lyrics;
     int _activeRow, _activeLyric;
@@ -87,6 +88,7 @@ sealed partial class IslandSurface
         _layer = new Grid();
         win.Overlay.Children.Add(_layer);
         body.ClipToBody(_layer);
+        _blur = new ContentBlur(win.Compositor, _layer);
 
         _rows = new[] { new CapsuleRow(win, Send), new CapsuleRow(win, Send) };
         foreach (var row in _rows) _layer.Children.Add(row.Root);
@@ -125,7 +127,7 @@ sealed partial class IslandSurface
 
         _clockTimer = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread().CreateTimer();
         _clockTimer.Interval = TimeSpan.FromSeconds(1);
-        _clockTimer.Tick += (_, _) => UpdateTimes();
+        _clockTimer.Tick += (_, _) => Guard.Run(UpdateTimes, "clock");
     }
 
     // ── Measuring (F1): content is measured once, at its final size, before the body moves ──
@@ -183,17 +185,28 @@ sealed partial class IslandSurface
             return;
         }
         bool swapping = current.Visible;
-        if (swapping) current.Leave(clearing: true);
+        if (swapping)
+        {
+            current.Leave(clearing: true);
+            _blur.Pass(current.Root, 0, 6, 0.12, holdMs: 200);   // out: blurs as it shrinks and clears (F2)
+        }
         _activeRow = 1 - _activeRow;
         var next = _rows[_activeRow];
         next.Fill(content, shape, _win.TopInsetDip, refresh: false);
-        next.Enter(swapping ? 95 : 40);   // a swap waits for the old content to clear: two rich states never overlap
+        int delay = AfterPanel(swapping ? 95 : 40);
+        next.Enter(delay);   // a swap waits for the old content to clear: two rich states never overlap
+        _blur.Pass(next.Root, 8, 0, 0.26, delay);   // in: arrives blurred and sharpens as it settles
         Announce(next.Root, content.Activity);
     }
 
     public void HideCapsule()
     {
-        foreach (var row in _rows) if (row.Visible) row.Leave();
+        foreach (var row in _rows)
+        {
+            if (!row.Visible) continue;
+            row.Leave();
+            _blur.Pass(row.Root, 0, 6, 0.12, holdMs: 380);   // the quick spring takes this long to fade it
+        }
     }
 
     /// <summary>Hover depth: the content leans a little toward the pointer while the glows behind it stay put.</summary>
@@ -216,11 +229,17 @@ sealed partial class IslandSurface
         var current = _lyrics[_activeLyric];
         if (current.Key == key && current.Visible) return;
         bool replacing = current.Visible;
-        if (replacing) current.Leave();
+        if (replacing)
+        {
+            current.Leave();
+            _blur.Pass(current.Root, 0, 4, 0.1, holdMs: 200);   // lighter than a content swap: lines change every few seconds
+        }
         _activeLyric = 1 - _activeLyric;
         var next = _lyrics[_activeLyric];
         next.Fill(key, text, dim, shape, _win.TopInsetDip);
-        next.Enter(replacing ? 95 : 30);   // the old line is gone before the new one rises in
+        int delay = AfterPanel(replacing ? 95 : 30);
+        next.Enter(delay);   // the old line is gone before the new one rises in
+        _blur.Pass(next.Root, 6, 0, 0.22, delay);
         AutomationProperties.SetName(next.Root, dim ? "Instrumental" : text);
     }
 
@@ -257,6 +276,7 @@ sealed partial class IslandSurface
     {
         bool fromSettings = _panel.Width != BodyShape.Panel.Width;
         _capsuleWasShown = _rows[_activeRow].Visible;   // only a capsule on screen has anything to travel
+        bool fromLyrics = _lyrics.Any(l => l.Visible);
         ResetPanelWidth();
         if (fromSettings) opening = true;
         foreach (var row in _rows) if (row.Visible) row.Leave(toScale: 0.96);
@@ -293,7 +313,7 @@ sealed partial class IslandSurface
         }
         else if (opening)
         {
-            _panelPart.Enter(70, fromScale: 0.97, fromY: -4);
+            _panelPart.Enter(fromLyrics ? 115 : 70, fromScale: 0.97, fromY: -4);   // a lyric line (and its blur) clears first
             if (_panelArt != null)
             {
                 // The cover starts where the capsule's cover was (13 DIPs in from the capsule's left edge,
@@ -382,12 +402,18 @@ sealed partial class IslandSurface
         foreach (var row in _rows) row.Forget();
     }
 
+    double _panelLeftAt = double.NegativeInfinity;
+
+    /// <summary>Content arriving just after the panel closed waits until the panel's content has cleared (F2: two rich states never overlap).</summary>
+    int AfterPanel(int delayMs) => (int)Math.Max(delayMs, 170 - (Clock.Now - _panelLeftAt) * 1000);
+
     public void HidePanel()
     {
         _clockTimer.Stop();
         if (!_panelPart.Shown && !_panel.IsHitTestVisible) return;
         _panel.IsHitTestVisible = false;
-        _panelPart.Leave(toScale: 0.97, toY: -4);
+        _panelLeftAt = Clock.Now;
+        _panelPart.Leave(toScale: 0.97, toY: -4, spring: Part.Clear);
         _panelArt?.Leave(toScale: 22.0 / 76);
     }
 
@@ -584,7 +610,7 @@ sealed partial class IslandSurface
         var button = new Button
         {
             Content = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold,
-                                      Foreground = Brush(primary ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary) },
+                                      Foreground = Brush(primary ? Palette.OnPrimary : Palette.Primary) },
             Height = 32, CornerRadius = new CornerRadius(16), Padding = new Thickness(18, 0, 18, 0), BorderThickness = new Thickness(0),
             Background = Brush(primary ? Palette.Primary : Windows.UI.Color.FromArgb(34, 255, 255, 255)),
         };
@@ -690,7 +716,7 @@ sealed partial class IslandSurface
     Button Round(string glyph, string name, double size, bool active, bool enabled, string command, Windows.UI.Color accent, bool filledInk = false)
     {
         var face = new TextBlock { Text = glyph, FontFamily = Icons, FontSize = size * 0.38, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        face.Foreground = Brush(filledInk ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : active ? accent : Palette.Primary);
+        face.Foreground = Brush(filledInk ? Palette.OnPrimary : active ? accent : Palette.Primary);
         var button = new Button
         {
             Content = face, Width = size, Height = size, CornerRadius = new CornerRadius(size / 2), Padding = new Thickness(0),
@@ -710,8 +736,8 @@ sealed partial class IslandSurface
     Button Toggle(string glyph, string label, bool on, string command, Windows.UI.Color accent)
     {
         var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        content.Children.Add(new TextBlock { Text = glyph, FontFamily = Icons, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(on ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary) });
-        content.Children.Add(new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(on ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary) });
+        content.Children.Add(new TextBlock { Text = glyph, FontFamily = Icons, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(on ? Palette.OnPrimary : Palette.Primary) });
+        content.Children.Add(new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(on ? Palette.OnPrimary : Palette.Primary) });
         var button = new Button
         {
             Content = content, Height = 28, CornerRadius = new CornerRadius(14), Padding = new Thickness(12, 0, 12, 0), BorderThickness = new Thickness(0),
@@ -731,6 +757,31 @@ sealed partial class IslandSurface
     };
 
     static SolidColorBrush Brush(Windows.UI.Color colour) => new(colour);
+
+    /// <summary>
+    /// A theme change (F11): the content dips out over 120 ms, <paramref name="rebuild"/> redraws it in
+    /// the new colours, and it returns over 180 ms, while the body's own colours ease across underneath.
+    /// </summary>
+    public void Retint(Action rebuild)
+    {
+        var layer = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(_layer);
+        if (MotionPolicy.Reduced) { rebuild(); return; }
+        var c = layer.Compositor;
+        var dip = c.CreateScalarKeyFrameAnimation();
+        dip.InsertKeyFrame(1f, 0f);
+        dip.Duration = TimeSpan.FromMilliseconds(120);
+        layer.StartAnimation("Opacity", dip);
+        _ = Later();
+        async Task Later()
+        {
+            await Task.Delay(120);
+            Guard.Run(rebuild, "retint");
+            var back = c.CreateScalarKeyFrameAnimation();
+            back.InsertKeyFrame(1f, 1f);
+            back.Duration = TimeSpan.FromMilliseconds(180);
+            layer.StartAnimation("Opacity", back);
+        }
+    }
 
     /// <summary>Narrator hears a new mark assertively, even when it shows only as the dot or the satellite (F116).</summary>
     public void AnnounceMark(Activity mark)
@@ -898,7 +949,7 @@ sealed partial class IslandSurface
             var button = new Button
             {
                 Content = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold,
-                                          Foreground = Brush(primary ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary) },
+                                          Foreground = Brush(primary ? Palette.OnPrimary : Palette.Primary) },
                 Height = 24, MinWidth = 0, CornerRadius = new CornerRadius(12), Padding = new Thickness(12, 0, 12, 0), BorderThickness = new Thickness(0),
                 Background = Brush(primary ? Palette.Primary : Windows.UI.Color.FromArgb(46, 255, 255, 255)),
             };

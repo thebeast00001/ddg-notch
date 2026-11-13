@@ -14,7 +14,7 @@ sealed record SettingsModel(
     bool Lyrics, bool Colours, bool AnnounceDevices, bool OutputNotes, bool HideFromCapture, bool Glass,
     IReadOnlyList<int> Alerts, int? FullAlert, IReadOnlyList<string> HiddenApps, string? FrontProgram,
     IReadOnlyList<(BluetoothState Device, bool Quiet)> Devices, IReadOnlyList<string> Diagnostics, string Version,
-    bool FollowDisplay = false, int Displays = 1, IReadOnlyList<string>? Keys = null, bool HelloReady = false)
+    bool FollowDisplay = false, int Displays = 1, IReadOnlyList<string>? Keys = null, bool HelloReady = false, bool EveryDisplay = false)
 {
     /// <summary>What changes the page's structure (lists); switches and chips update themselves in place.</summary>
     public string Structure => string.Join("|", HiddenApps) + "#" + FrontProgram + "#" + string.Join("|", Devices.Select(d => d.Device.Id)) +
@@ -105,6 +105,10 @@ sealed partial class IslandSurface
         if (apps.Children.Count == 0) apps.Children.Add(Text("Bring an app to the front, then add it here.", 12, FontWeights.Normal, Palette.Tertiary));
         sections.Children.Add(Section("Screen",
             SwitchRow("Hide from screen sharing", "You still see the island; people watching your screen don't.", model.HideFromCapture, "toggle:hide-from-capture"),
+            SwitchRow("Show on every display",
+                model.Displays > 1 ? "A live copy of the island on each display. Press one to bring the island there."
+                                   : "One display is connected now; this applies when you add another.",
+                model.EveryDisplay, "toggle:every-display"),
             SwitchRow("Follow the display you're using",
                 model.Displays > 1 ? "The island moves to the screen with the window you're working in."
                                    : "One display is connected now; this applies when you add another.",
@@ -259,7 +263,7 @@ sealed partial class IslandSurface
         void Paint()
         {
             button.Background = Brush(state ? Palette.Primary : Windows.UI.Color.FromArgb(34, 255, 255, 255));
-            text.Foreground = Brush(state ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary);
+            text.Foreground = Brush(state ? Palette.OnPrimary : Palette.Primary);
             AutomationProperties.SetItemStatus(button, state ? "Selected" : "Not selected");
         }
         Paint();

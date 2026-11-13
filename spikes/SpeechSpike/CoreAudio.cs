@@ -141,6 +141,54 @@ sealed record AudioSession(bool IsCapture, uint ProcessId, string ProcessName, s
 /// </summary>
 static class AudioSessions
 {
+    static IMMDeviceEnumerator? _enumerator;
+    static List<IAudioSessionManager2>? _capture;
+    static long _captureRead;
+
+    /// <summary>
+    /// The cheap question asked between calls (F128): is any other program recording from a
+    /// microphone right now? A call cannot exist without one, so the full snapshot (every process,
+    /// every device) is only taken when this says yes. The device handles are kept and re-read once a
+    /// minute, or when one fails, so a waiting check costs almost nothing.
+    /// </summary>
+    public static bool AnyoneRecording()
+    {
+        try
+        {
+            if (_capture == null || Environment.TickCount64 - _captureRead > 60_000)
+            {
+                _enumerator ??= (IMMDeviceEnumerator)new MMDeviceEnumeratorClass();
+                var managers = new List<IAudioSessionManager2>();
+                Guid managerId = typeof(IAudioSessionManager2).GUID;
+                if (_enumerator.EnumAudioEndpoints(1 /* recording */, 1 /* active */, out var devices) == 0)
+                {
+                    devices.GetCount(out uint count);
+                    for (uint d = 0; d < count; d++)
+                        if (devices.Item(d, out var device) == 0 && device.Activate(ref managerId, 23, IntPtr.Zero, out object activated) == 0)
+                            managers.Add((IAudioSessionManager2)activated);
+                }
+                _capture = managers;
+                _captureRead = Environment.TickCount64;
+            }
+            int self = Environment.ProcessId;
+            foreach (var manager in _capture)
+            {
+                if (manager.GetSessionEnumerator(out var list) != 0) { _capture = null; return true; }   // unsure: let the full check decide
+                list.GetCount(out int count);
+                for (int i = 0; i < count; i++)
+                {
+                    if (list.GetSession(i, out var session) != 0 || session == null) continue;
+                    session.GetState(out int state);
+                    session.GetProcessId(out uint pid);
+                    if (state == 1 && pid != 0 && pid != self) return true;
+                }
+            }
+            return false;
+        }
+        catch (COMException) { _capture = null; return true; }
+        catch (InvalidCastException) { _capture = null; return true; }
+    }
+
     public static List<AudioSession> Snapshot()
     {
         var sessions = new List<AudioSession>();

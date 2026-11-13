@@ -30,7 +30,17 @@ public sealed class BluetoothAdapter() : Adapter("bluetooth")
 
     public IReadOnlyList<BluetoothState> Devices { get { lock (_gate) return _devices.Values.ToList(); } }
 
+    /// <summary>
+    /// The watchers are created on a background thread: created on the UI thread they deliver through
+    /// its message loop, and the island measured 0.45% of a core more at rest that way (13 November).
+    /// </summary>
     protected override void OnStart()
+    {
+        if (Environment.GetEnvironmentVariable("FORTY_BT_UI_THREAD") == "1") { StartWatchers(); return; }   // to measure the difference
+        Task.Run(StartWatchers).GetAwaiter().GetResult();
+    }
+
+    void StartWatchers()
     {
         string[] properties = { Connected, Container, Major };
         foreach (var (selector, le) in new[] { (BluetoothDevice.GetDeviceSelectorFromPairingState(true), false), (BluetoothLEDevice.GetDeviceSelectorFromPairingState(true), true) })

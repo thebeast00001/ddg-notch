@@ -38,6 +38,7 @@ sealed partial class App : Application
           "audio-output": "on",
           "bluetooth": "on",
           "diagnostics": "you",
+          "every-display": "off",
           "follow-display": "off",
           "glass": "off",
           "hide-from-capture": "off",
@@ -51,7 +52,8 @@ sealed partial class App : Application
         string? log = Environment.GetEnvironmentVariable("FORTY_OUT");
         string diagnostics = Path.Combine(Home, "diagnostics");
         bool hold = Environment.GetEnvironmentVariable("FORTY_DEMO") == "hold";
-        bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1" || hold;
+        bool transitions = Environment.GetEnvironmentVariable("FORTY_DEMO") == "transitions";
+        bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1" || hold || transitions;
 
         // Crash reports carry no personal data (F148) and stay on this PC.
         void Crash(Exception error, string where)
@@ -61,6 +63,7 @@ sealed partial class App : Application
             CrashReport.Save(diagnostics, CrashReport.Build(error, typeof(App).Assembly.GetName().Version?.ToString() ?? "?", adapters, _controller?.Meter));
         }
         UnhandledException += (_, e) => Crash(e.Exception, "unhandled");
+        Guard.Report = (error, where) => Crash(error, "recovered in " + where);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => { if (e.ExceptionObject is Exception ex) Crash(ex, "unhandled (domain)"); };
         TaskScheduler.UnobservedTaskException += (_, e) => { Crash(e.Exception, "unobserved task"); e.SetObserved(); };
 
@@ -85,6 +88,7 @@ sealed partial class App : Application
             Log(log, $"visible {startMs:0} ms after the process started; adapters: " +
                      string.Join(", ", _controller.Adapters.Select(a => $"{a.Name} {a.Status.Availability}")));
             if (hold) await Demo.HoldAsync(_controller);
+            else if (transitions) await Demo.TransitionsAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-transitions"));
             else if (demo) await Demo.RunAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-demo"));
         }
         catch (Exception ex)

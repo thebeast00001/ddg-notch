@@ -60,3 +60,59 @@ public static class Gesture
     public static bool Commits(double velocity, double distanceTravelled, double towardCommitSign) =>
         Math.Abs(velocity) > 50 ? Math.Sign(velocity) == Math.Sign(towardCommitSign) : distanceTravelled * towardCommitSign > 0;
 }
+
+/// <summary>
+/// Pulling the island open or pushed closed with a finger or pen (F12, MOTION.md 6): a tap until the
+/// pointer has moved 10 DIPs, then the body's height follows the finger 1:1 between the two shapes,
+/// with rising resistance past either end; on release it goes to the other shape or back, by the
+/// direction it was moving, carrying that speed.
+/// </summary>
+public sealed class PullGesture
+{
+    public const double Hysteresis = 10;
+
+    readonly double _startY, _from, _to;
+    readonly VelocityTracker _velocity = new();
+    double _lastY;
+
+    /// <param name="startY">Where the finger went down, in DIPs.</param>
+    /// <param name="fromHeight">The body's height when it was grabbed.</param>
+    /// <param name="toHeight">The height at the other end (the panel's when opening, the capsule's when closing).</param>
+    public PullGesture(double startY, double fromHeight, double toHeight, double now)
+    {
+        _startY = _lastY = startY;
+        _from = fromHeight;
+        _to = toHeight;
+        _velocity.Add(now, startY);
+    }
+
+    /// <summary>True once the finger has moved far enough to be a drag rather than a tap.</summary>
+    public bool Dragging { get; private set; }
+
+    /// <summary>The body's height for the finger at <paramref name="y"/>, or null while it could still be a tap.</summary>
+    public double? Move(double y, double now)
+    {
+        _velocity.Add(now, y);
+        _lastY = y;
+        double dy = y - _startY;
+        if (!Dragging && Math.Abs(dy) < Hysteresis) return null;
+        Dragging = true;
+        double raw = _from + dy;
+        double low = Math.Min(_from, _to), high = Math.Max(_from, _to);
+        if (raw > high) return high + Gesture.RubberBand(raw - high, high);
+        if (raw < low) return low + Gesture.RubberBand(raw - low, Math.Max(low, 1));
+        return raw;
+    }
+
+    /// <summary>How far between the two shapes a height is: 0 at the grab, 1 at the other end.</summary>
+    public double Progress(double height) => Math.Clamp((height - _from) / (_to - _from), 0, 1);
+
+    /// <summary>On release: a tap, or a drag that goes to the other end (commit) or back, with the finger's speed in DIPs per second.</summary>
+    public (bool Tap, bool Commit, double Velocity) Release(double now)
+    {
+        if (!Dragging) return (true, false, 0);
+        double v = _velocity.Velocity(now);
+        bool commit = Gesture.Commits(v, _lastY - _startY, Math.Sign(_to - _from));
+        return (false, commit, v);
+    }
+}

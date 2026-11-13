@@ -68,6 +68,8 @@ switch (args.Length > 0 ? args[0] : "bench")
         return Summarize(args.Skip(1).ToArray());
     case "policy-selftest":
         return PolicySelfTest.Run();
+    case "mic-watch":
+        return MicWatch.Run(args.Length > 1 && double.TryParse(args[1], System.Globalization.CultureInfo.InvariantCulture, out double watchSeconds) ? watchSeconds : 60);
     case "summary-selftest":
         return SummarySelfTest();
     case "keys":

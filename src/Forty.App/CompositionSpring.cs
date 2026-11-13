@@ -132,6 +132,13 @@ sealed class CompositionSpring
         else Model.Retarget(target, isFade && MotionPolicy.Reduced ? MotionPolicy.ReducedFade : spring, Clock.Now);
     }
 
+    /// <summary>A release from a drag: head for <paramref name="target"/> carrying <paramref name="velocity"/> (units per second).</summary>
+    public void Throw(double target, Spring spring, double velocity)
+    {
+        if (MotionPolicy.Reduced) { Model.SetDirect(target); return; }
+        Model.Release(target, spring, Clock.Now, velocity);
+    }
+
     /// <summary>Jump to a value with no motion (a pointer being followed 1:1, or the first frame).</summary>
     public void Set(double value) => Model.SetDirect(value);
 

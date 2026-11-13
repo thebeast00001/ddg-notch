@@ -338,22 +338,44 @@ Found while measuring this slice:
 | At rest, nothing playing | 0.16% | 0.9–1.5% (on battery, saver on, PC in use; mostly one background thread, device and power events) |
 | Memory at rest | 104–107 MB | 99–101 MB |
 
+### Sixth slice: blur, the transition review, touch, every display (13 November)
+
+- **Blur on content changes (F2).** Content that changes passes through a blur, as the spec asks: out 0 → 6 while it shrinks and fades, in 8 → 0 while it settles. XAML has no blur, so the compositor draws the element into a live surface, a blur reads it, and the blurred copy stands in for the element while its own entrance or exit plays inside it. Nothing is kept between changes.
+- **Every transition reviewed (F2).** `FORTY_DEMO=transitions` films all 72 changes between the nine states. They were stepped through frame by frame and ticked off in [docs/transitions.md](docs/transitions.md), with a sheet per starting state in `docs/transitions/`. The review found three faults, now fixed: old content came back faintly when going to the dot or rest; the panel's content overlapped what arrived after it closed; and a lyric line overlapped the panel opening over it.
+- **Touch and pen (F12).** A tap toggles on release. A drag commits after 10 DIPs, the body follows the finger 1:1, and past either end it resists. On release, it opens or closes by the direction it was moving, carrying that speed, or springs back if let go too early. Mouse clicks still act on the press. Five tests cover the gesture, and a scripted finger filmed it (`docs/p1-film-pull-open.png`). It hasn't been tried on a touch screen.
+- **Every display (F7).** *Show on every display* (off by default) puts a live copy of the island on each other display. The compositor draws the island's tree into a surface, and a window on each display shows that surface, so every morph, glow and blur appears everywhere on the same frame without a second island's logic. Pressing a copy brings the island to that display. Checked by putting a copy lower on this screen (`docs/p1-mirror.png`). Moving between displays (F8) was filmed: shrink to the sliver, fade, grow, never sliding.
+- **Frame pacing (F9).** Each morph is measured against Windows' compositor counters: the display's refresh rate, and refreshes that went by with no new frame. The results are numbers only and appear in Settings › Diagnostics. A 120 or 144 Hz screen shows its own figures the first time it is used.
+- **Theme changes (F11).** A contrast-theme change eases the body's colours over 300 ms. The content dips out for 120 ms, is redrawn in the new colours (an open panel included) and comes back, so text never sits in the wrong colour. Filming it found a real bug: in a light contrast theme, the play button's icon and an "on" toggle were black on black. They now use the theme's colours. It hasn't been tried in a real contrast theme, which needs you to switch one on.
+- **Battery saver (F128), measured.** Over 10 idle minutes in battery saver, the speech process's call watcher averaged **0.029% of a core** (0.0% to one decimal, as the spec asks), down from 0.79%. Between calls it now asks only "is any app using a microphone?", from device handles it keeps, and takes the full snapshot of every process and device only when something is.
+- **Microphone changes (F136).** `spikes/mic-watch.cmd` shows each change of the default microphone as it happens, without opening anything. Run it while plugging a headset in to check what capture would follow.
+- **A crash that leaves no report:** an exception escaping a timer tick or queued callback is a fail-fast inside WinUI, which skips the crash handler. It happened once, during the first transition run, around when the PC locked. Every such callback now goes through a guard that records the error (no personal data) and keeps the island running. Two later runs of the full sequence caught nothing.
+
+**Measured:**
+
+| | Result |
+| --- | --- |
+| Speech process, 10 min idle in battery saver | 0.029% of a core (was 0.79%) |
+| Island memory at rest | 94–96 MB. With no adapters and no warm-up it is still 89 MB: that is the floor of WinUI and .NET here, so 90 MB needs the Native AOT build. The warm-up costs 4.7 MB and is kept, because it makes the first song and the first panel instant. Smaller garbage-collector budgets and turning off profile-guided compilation changed nothing. |
+| Island CPU at rest | 0.6–0.7% of a core with Bluetooth on, 0.04–0.3% with it off. The same Bluetooth watchers in a plain process use 0.00% and deliver about one event in 20 s, so the cost comes from hosting them in the island; creating them off the UI thread made no clear difference. Still open. |
+
+**Glass (F11), not built.** Both approaches left from spike S6 put the blur behind the whole window, not inside the island's shape. The window's region can follow the shape only in whole pixels, and only when a morph starts and ends, so the blur would show as a rectangle around the island during every morph. Shaping it properly means running a second copy of the body's springs inside Windows' own compositor, where a frame's lag would show glass outside the edge in fast motion. Ink stays the look.
+
 ### Phase 1 checklist: built and remaining (13 November)
 
 | Feature | State | Built | Remaining |
 | --- | --- | --- | --- |
 | F1 Pill adapts to the activity | Done | Capsule sizing, lyric sizing with two-line growth, touch height, true pill corners | — |
-| F2 Smooth morphs between states | Partial | One body, layered entrances, sequenced swaps, filmstrip checks | Blur on content swaps; the full 72-transition review table |
+| F2 Smooth morphs between states | Done | One body, layered entrances, sequenced swaps, blur out 0 → 6 and in 8 → 0, all 72 transitions reviewed in docs/transitions.md | — |
 | F3 Clean retargeting | Done | Additive springs with slot folding; 40 changes in 0.4 s without a jump | — |
 | F4 Panels grow from the pill | Done | Body first; the cover, glyph, label, value, battery gauge and percentage travel from capsule to panel, one copy at a time | — |
 | F5 Priority-aware stacking | Done | Queue, satellite, "+N", holds, the liquid bridge | The drop takes the base tint while the capsule shows album colours (about 100 ms) |
 | F6 Many ways to open | Partial | Hover with intent, click, Ctrl+Alt+Space, lean on hover | Voice (phase 2) |
-| F7 Placement on every monitor | Partial | Re-placed on display, scale and taskbar changes; below a top taskbar | One island per display; a second monitor to try it |
-| F8 Follow the active display | Not verified | The setting, the 300 ms rule (tested), the sliver-and-fade move | A second monitor |
-| F9 Motion paced to the display | Not verified | Time-based springs | A 120 or 144 Hz monitor and PresentMon |
+| F7 Placement on every monitor | Not verified | Re-placed on display, scale and taskbar changes; below a top taskbar; a live copy on every display (checked on one) | A second monitor at another scale |
+| F8 Follow the active display | Not verified | The setting, the 300 ms rule (tested), the move filmed | A second monitor |
+| F9 Motion paced to the display | Not verified | Time-based springs; every morph measured against the compositor's counters, shown in Diagnostics | A 120 or 144 Hz monitor |
 | F10 Reduced motion | Done | One reduced path for every spring, part and loop; reviewed frame by frame with it on | — |
-| F11 Theme-aware materials | Partial | Album tint, contrast-theme colours | A real contrast theme; Glass (spike S6 failed, two approaches left) |
-| F12 Keyboard, Narrator, contrast, touch | Partial | Shortcut focus, Tab cycles, arrow keys, Esc steps back one level, names and announcements | A touch screen |
+| F11 Theme-aware materials | Partial | Album tint; contrast colours; theme changes ease over 300 ms with content redrawn under a dip; black-on-black bug fixed | A real contrast theme (you); Glass (see the sixth slice) |
+| F12 Keyboard, Narrator, contrast, touch | Partial | Shortcut focus, Tab, arrows, Esc, names and announcements; touch tap, drag to open and close with resistance and throw (tested, filmed with a scripted finger) | A touch screen; Accessibility Insights |
 | F43 Media sessions | Done (unchecked with a real player) | Everything in the sub-feature table above | Try Spotify, a browser and Windows Media Player |
 | F45 Bluetooth devices | Done (no real connect yet) | Connect and disconnect, news filter, panel chips, a switch per device | Connect a real headset |
 | F46 Headset battery, only when real | Done | Windows' own reading, only while connected | — |
@@ -361,19 +383,19 @@ Found while measuring this slice:
 | F116 Indicators that cannot be hidden | Done | Marks in every mode as capsule, satellite or dot; the fail-safe checked across real processes; Narrator | Wake word and screen marks wait for phase 2 |
 | F121 Credentials in protected storage | Partial | Encrypted store in the app; Service keys in settings; Windows Hello to remove one | The automatic scan of written files; Windows' credential locker once packaged |
 | F127 Visuals follow power | Done | Glass, colours and equaliser stop in battery saver; ambient motion stepped at 30 Hz | — |
-| F128 Less work in battery saver | Partial | The island tells the speech process; it unloads its model after a minute and looks for calls half as often | Measuring 10 idle minutes in battery saver |
-| F130 Thermal limits and a light idle | Partial | Resting springs, stepped ambient motion, fewer redraws | Memory is 99–101 MB against 90; backing off heavy work |
+| F128 Less work in battery saver | Done | The island tells the speech process; model let go after a minute; calls checked cheaply and half as often; 10 idle minutes averaged 0.029% | — |
+| F130 Thermal limits and a light idle | Partial | Resting springs, stepped ambient motion, fewer redraws, guarded callbacks; memory floor measured | Memory 94–96 MB against 90 (needs Native AOT); Bluetooth's 0.5% at rest |
 | F132 Low-distraction mode | Done | Focus or low battery means dots | — |
 | F133 Full-screen apps | Done | Hides for full-screen apps unless a dot is due; hides in front of apps you choose | — |
 | F134 Presentation and game mode | Done (no real share yet) | Both modes; hidden from screen capture, checked with Windows' capture | A look at a real Teams or Meet share |
-| F136 Device changes mid-conversation | Partial | "Now using …"; dictation and call capture follow the default microphone | Trying it with a real headset |
+| F136 Device changes mid-conversation | Partial | "Now using …"; dictation and call capture follow the default microphone; `mic-watch.cmd` to check it | Trying it with a real headset |
 | F138 Graceful degradation | Done | Health per adapter, fault switches | — |
 | F143 Signed updates, staged rollout | Not started | — | Packaging (needs Visual Studio Build Tools) |
 | F148 Redacted diagnostics | Done | Crash reports without personal data | — |
 | F149 Feature flags | Done | File, defaults, live reload, switches in the panel and on the settings page | — |
 | F150 Monitoring without content | Done (a week not yet run) | Numbers-only records on this PC; the Diagnostics section of settings reads them | Confirm a week stays under 5 MB |
 
-**Totals: 18 done, 9 partial, 3 not verified or not started.** What blocks the rest: a second or high-refresh monitor (F7, F8, F9), a touch screen (F12), Visual Studio Build Tools for packaging and Native AOT (F143, and the memory budget), and real devices for F136. Blur on content swaps (F2) and Glass (F11) are the two visual items left.
+**Totals: 20 done, 6 partial, 4 not verified or not started.** What is left needs hardware or you: a second monitor (F7, F8), a 120 or 144 Hz monitor (F9), a touch screen (F12), a real contrast theme (F11), a headset (F136), and Visual Studio Build Tools for packaging and Native AOT (F143, and F130's memory budget). Glass (F11) is not built, for the reason in the sixth slice.
 
 ### Phase 1 exit test
 

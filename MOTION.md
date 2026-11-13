@@ -355,6 +355,38 @@ Each starts where it was in the capsule, at its capsule size, read from the laid
 
 **Moving between displays (F8).** The body shrinks to the sliver on `quick` and the window fades in 160 ms. On the new display it fades in in 120 ms and grows from the sliver on `move`. It never slides across the gap between screens.
 
+## 14c. Sixth slice (13 November)
+
+**Blur (F2).** XAML has no blur, so a changing element is drawn by the compositor into a live surface, and a blur reads that surface. The blurred copy stands in for the element while the element's own entrance or exit plays inside it.
+
+| Change | Blur | Over | Starts |
+| --- | --- | --- | --- |
+| Capsule content leaving (swap) | 0 → 6 | 120 ms | at once |
+| Capsule content leaving (to rest or the dot) | 0 → 6 | 120 ms | at once |
+| Capsule content arriving | 8 → 0 | 260 ms | with its entrance (40 or 95 ms) |
+| Lyric line leaving | 0 → 4 | 100 ms | at once |
+| Lyric line arriving | 6 → 0 | 220 ms | with its entrance |
+
+Not blurred: the panel (its shared elements travel crisp), the satellite, the dot.
+
+**Rule from the review:**
+- **A stand-in stays until what it stands in for has finished fading:** 200 ms on the clearing spring, 380 ms on `quick`. Otherwise the sharp original reappears faintly when the stand-in goes.
+- **Content arriving within 170 ms of the panel closing waits for the panel's content to clear;** that content leaves on the clearing spring.
+- **The panel's content waits 115 ms after a lyric line, instead of 70.**
+
+The full review is in docs/transitions.md.
+
+**Touch and pen (F12, section 6).**
+- **Tap:** acts on release.
+- **Drag:** commits after 10 DIPs. The body's height follows the finger 1:1, and width, corners and top follow the same progress.
+- **Past either end:** the body resists (rubber band, c = 0.55).
+- **Release:** it goes by the release velocity's direction (by distance if the finger had paused), on `thrown`, carrying the finger's speed.
+- **Mouse:** a click still acts on the press.
+
+**Theme changes (F11).** The body's fill and hairline ease over 300 ms. The content's layer dips to 0 over 120 ms, is redrawn in the new colours, and returns over 180 ms. Text on a filled button uses the "on primary" role (black, or the window colour in a contrast theme), never a fixed black.
+
+**Every display (F7).** Each other display shows a live copy of the island: the compositor draws the island's tree into a surface, and a window there shows that surface. There is nothing to choreograph. Every frame is the island's own frame.
+
 ## 14. Never
 
 - Take keyboard focus because the pointer passed over the island.

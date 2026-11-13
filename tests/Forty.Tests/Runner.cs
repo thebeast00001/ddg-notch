@@ -35,6 +35,8 @@ static class Runner
     static int Main(string[] args)
     {
         if (args.FirstOrDefault() == "lyrics-check") return LyricsCheck.Run();
+        if (args.FirstOrDefault() == "bt-events") return BluetoothEvents.Run(args.Length > 1 ? double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 20, args.Length > 2 ? args[2] : "both");
+        if (args.FirstOrDefault() == "speech-idle" && args.Length >= 3) return SpeechIdle.Run(double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture), args[2]);
         if (args.FirstOrDefault() == "probe") return Probe.Run(args.Length > 1 && double.TryParse(args[1], out double s) ? s : 3);
         string? filter = args.FirstOrDefault();
         var tests = typeof(Runner).Assembly.GetTypes()

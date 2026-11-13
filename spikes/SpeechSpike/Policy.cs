@@ -187,6 +187,34 @@ sealed class FollowingMicrophone : IDisposable
     }
 }
 
+/// <summary>
+/// F136, for you to try with a headset: "mic-watch [seconds]" prints each change of the default
+/// microphone (for dictation and for calls) as it happens, the way capture would follow it. Nothing is
+/// opened or recorded; device ids are shortened to a tag, so nothing identifying is printed.
+/// </summary>
+static class MicWatch
+{
+    static string Tag(string? id) => id == null ? "none" : "mic-" + (uint)id.GetHashCode() % 10000;
+
+    public static int Run(double seconds)
+    {
+        string? dictation = DefaultDevice.CaptureId(0), calls = DefaultDevice.CaptureId(2);
+        Console.WriteLine($"Watching for {seconds:0} s. Default microphone: {Tag(dictation)} (dictation), {Tag(calls)} (calls).");
+        Console.WriteLine("Plug a headset in or out, or switch Bluetooth on or off; each change shows here within half a second.");
+        var until = DateTime.UtcNow.AddSeconds(seconds);
+        int changes = 0;
+        while (DateTime.UtcNow < until)
+        {
+            Thread.Sleep(250);
+            string? d = DefaultDevice.CaptureId(0), c = DefaultDevice.CaptureId(2);
+            if (d != dictation) { Console.WriteLine($"  {DateTime.Now:HH:mm:ss.f}  dictation would now record from {Tag(d)}"); dictation = d; changes++; }
+            if (c != calls) { Console.WriteLine($"  {DateTime.Now:HH:mm:ss.f}  call notes would now record from {Tag(c)}"); calls = c; changes++; }
+        }
+        Console.WriteLine(changes == 0 ? "No change seen." : $"{changes} change(s) seen.");
+        return 0;
+    }
+}
+
 /// <summary>Checks for F128 and F136 that need no microphone and no model: run with "policy-selftest".</summary>
 static class PolicySelfTest
 {
