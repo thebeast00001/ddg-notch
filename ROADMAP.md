@@ -313,18 +313,43 @@ Found in this slice:
 
 **Measured on a live run, nothing playing:** start 0.60–0.62 s; CPU at rest 0.16% of a core; memory 104–107 MB private, over the 90 MB budget and up about 10 MB from the second slice. Turning off background garbage collection or asking the collector to conserve memory changed nothing, so the growth is in the native UI and graphics layers, not in .NET objects. Native AOT (blocked on Build Tools) and fewer pre-built panel parts are the next things to try.
 
-### Phase 1 checklist: built and remaining (12 November)
+### Fifth slice: marks, the liquid bridge, travel, displays (13 November)
+
+- **Marks that cannot be hidden (F116).** The island now hosts the link to the speech process (the named pipe `forty-island`), so dictation and call notes work with the phase 1 island; `spikes/start-forty.cmd` starts it. The speech process's messages become activities: *Listening* with a red microphone and a live level meter, *Writing it down*, *Typed*; *Take call notes?* with Yes and Not now right in the capsule; *Taking notes* as a red mark; *Notes ready* with Open. A mark is always visible, in every mode, whatever else shows. It is the capsule when it is what you are doing, the satellite beside anything else, or the dot when nothing else shows. Full-screen apps and the hidden-apps list never hide it. The panel lists every mark with its elapsed time and Stop. Narrator hears each new mark.
+  - **The fail-safe, checked across real processes:** a stand-in speech process connected over the pipe and reported a recording, then closed the connection while still running. The mark stayed, worded "Notes may still be recording". When the process exited, it cleared, since nothing can capture any more (`docs/p1-mark-unconfirmed.png`).
+  - A bug this found: sending to a speech process that wasn't reading could block, holding a lock the "connection broke" code needed, so the island never noticed. Lines now go through a short queue drained in the background, and three tests use real pipes.
+- **The liquid bridge (F5).** The satellite now pulls out of the capsule's right end as a drop on a lively spring. A neck of the body's own fill joins the two, thins and snaps, and leaving reverses it. The neck is the metaball join of two circles, precomputed at 25 points of the journey. It runs as one compositor path animation whose progress is bound to the satellite's spring, so it follows interruptions frame by frame. The hairline steps back while the two are one shape. Four tests cover the geometry (`docs/p1-film-bridge-out.png`, `docs/p1-film-bridge-in.png`). One flaw: with album colours on, the drop takes the base tint while the capsule's edge shows the glows, so for about 100 ms the colours differ.
+- **Shared elements travel (F4).** On opening, the capsule's label travels into the panel's title, its value into the header's value, and for battery the gauge and percentage into the panel's large gauge and number. They go on the body's spring, from positions read off the laid-out panel. The capsule's copies vanish when the panel's start in, so each element is on screen once (`docs/p1-film-battery-travel.png`, `docs/p1-film-approval-travel.png`).
+- **Displays (F7, F8).** The island re-places itself when a display is added, removed or rescaled, and when a taskbar moves; it sits below a taskbar docked at the top. A new setting, *Follow the display you're using*, is off by default. When on, the island moves to the display of the window you're working in, once that has held for 300 ms. It never moves while you are using it, and it shrinks to the sliver and fades on one display, then grows on the other, never sliding across. Six tests cover the rules. Only one display is connected here, so the move itself has not been seen.
+- **Windows Hello for keys (F121).** Settings has a *Service keys* section: names only, never values, each with Remove. Removing asks Windows Hello where it is set up. The prompt was not triggered in testing.
+- **The speech process (F128, F136).** It now connects to the island on its own and answers "state?". In battery saver (the island tells it), it lets its model go after a minute unused and loads it again as you start speaking, and it looks for calls every two seconds instead of one (`SpeechSpike policy-selftest`, 6 checks). When the default microphone changes mid-dictation or mid-call, capture reopens on the new one and the pieces are joined on one timeline. That path has not been tried with a microphone.
+
+Found while measuring this slice:
+
+- **Music on screen cost 13–18% of a core.** Paused, the island costs nothing. Playing, WinUI's in-app compositor drew every frame at 60 Hz, and each frame costs it about 2 ms here, whatever is in it. The equaliser alone cost as much as the equaliser plus the fluid colours. The window's size, the clips and the bindings made no difference; each was measured. Fix: the equaliser and the fluid colours are now stepped 30 times a second through compositor values only. Music on screen now costs about 6% of a core. Stepping through XAML properties instead cost more than before, because each step woke XAML's render pass.
+- **Settled springs rest.** Each spring's seventeen expressions stop once it settles and wake on the next move.
+- **Battery reports redrew the island every 3 to 4 seconds** on battery. Now only a change of mode, or an open panel, redraws.
+
+**Measured now:**
+
+| | Before | Now |
+| --- | --- | --- |
+| Music playing, colours flowing | 13–18% of a core | about 6% |
+| At rest, nothing playing | 0.16% | 0.9–1.5% (on battery, saver on, PC in use; mostly one background thread, device and power events) |
+| Memory at rest | 104–107 MB | 99–101 MB |
+
+### Phase 1 checklist: built and remaining (13 November)
 
 | Feature | State | Built | Remaining |
 | --- | --- | --- | --- |
 | F1 Pill adapts to the activity | Done | Capsule sizing, lyric sizing with two-line growth, touch height, true pill corners | — |
 | F2 Smooth morphs between states | Partial | One body, layered entrances, sequenced swaps, filmstrip checks | Blur on content swaps; the full 72-transition review table |
 | F3 Clean retargeting | Done | Additive springs with slot folding; 40 changes in 0.4 s without a jump | — |
-| F4 Panels grow from the pill | Partial | Body first; the cover and the activity's glyph travel from capsule to panel | Timer digits travelling too |
-| F5 Priority-aware stacking | Partial | Queue, satellite, "+N", holds | The liquid bridge between capsule and satellite |
+| F4 Panels grow from the pill | Done | Body first; the cover, glyph, label, value, battery gauge and percentage travel from capsule to panel, one copy at a time | — |
+| F5 Priority-aware stacking | Done | Queue, satellite, "+N", holds, the liquid bridge | The drop takes the base tint while the capsule shows album colours (about 100 ms) |
 | F6 Many ways to open | Partial | Hover with intent, click, Ctrl+Alt+Space, lean on hover | Voice (phase 2) |
-| F7 Placement on every monitor | Partial | Primary display, DPI-correct | One island per display; reacting to displays added or removed |
-| F8 Follow the active display | Not started | — | All |
+| F7 Placement on every monitor | Partial | Re-placed on display, scale and taskbar changes; below a top taskbar | One island per display; a second monitor to try it |
+| F8 Follow the active display | Not verified | The setting, the 300 ms rule (tested), the sliver-and-fade move | A second monitor |
 | F9 Motion paced to the display | Not verified | Time-based springs | A 120 or 144 Hz monitor and PresentMon |
 | F10 Reduced motion | Done | One reduced path for every spring, part and loop; reviewed frame by frame with it on | — |
 | F11 Theme-aware materials | Partial | Album tint, contrast-theme colours | A real contrast theme; Glass (spike S6 failed, two approaches left) |
@@ -333,22 +358,22 @@ Found in this slice:
 | F45 Bluetooth devices | Done (no real connect yet) | Connect and disconnect, news filter, panel chips, a switch per device | Connect a real headset |
 | F46 Headset battery, only when real | Done | Windows' own reading, only while connected | — |
 | F47 Charging and battery | Done | Gauge, sweep, alerts at levels you choose, an 80% charge alert, time to full, health | — |
-| F116 Indicators that cannot be hidden | Not started | — | Needs the speech process inside the app |
-| F121 Credentials in protected storage | Partial | Encrypted key store in the app, shared with the speech process | Windows Hello for sensitive actions; Windows' credential locker once packaged |
-| F127 Visuals follow power | Partial | Glass, glows and equaliser stop in battery saver | — once the speech process is in |
-| F128 Less work in battery saver | Partial | The policy table | Applying it to the speech process |
-| F130 Thermal limits and a light idle | Partial | Power mode, own CPU and memory each minute, nothing animates at rest (0.16% of a core) | Backing off heavy work; memory is 104–107 MB against 90 |
+| F116 Indicators that cannot be hidden | Done | Marks in every mode as capsule, satellite or dot; the fail-safe checked across real processes; Narrator | Wake word and screen marks wait for phase 2 |
+| F121 Credentials in protected storage | Partial | Encrypted store in the app; Service keys in settings; Windows Hello to remove one | The automatic scan of written files; Windows' credential locker once packaged |
+| F127 Visuals follow power | Done | Glass, colours and equaliser stop in battery saver; ambient motion stepped at 30 Hz | — |
+| F128 Less work in battery saver | Partial | The island tells the speech process; it unloads its model after a minute and looks for calls half as often | Measuring 10 idle minutes in battery saver |
+| F130 Thermal limits and a light idle | Partial | Resting springs, stepped ambient motion, fewer redraws | Memory is 99–101 MB against 90; backing off heavy work |
 | F132 Low-distraction mode | Done | Focus or low battery means dots | — |
 | F133 Full-screen apps | Done | Hides for full-screen apps unless a dot is due; hides in front of apps you choose | — |
 | F134 Presentation and game mode | Done (no real share yet) | Both modes; hidden from screen capture, checked with Windows' capture | A look at a real Teams or Meet share |
-| F136 Device changes mid-conversation | Partial | "Now using …" | Capture moving to the new device (speech process) |
+| F136 Device changes mid-conversation | Partial | "Now using …"; dictation and call capture follow the default microphone | Trying it with a real headset |
 | F138 Graceful degradation | Done | Health per adapter, fault switches | — |
 | F143 Signed updates, staged rollout | Not started | — | Packaging (needs Visual Studio Build Tools) |
 | F148 Redacted diagnostics | Done | Crash reports without personal data | — |
 | F149 Feature flags | Done | File, defaults, live reload, switches in the panel and on the settings page | — |
 | F150 Monitoring without content | Done (a week not yet run) | Numbers-only records on this PC; the Diagnostics section of settings reads them | Confirm a week stays under 5 MB |
 
-**Totals: 14 done, 12 partial, 4 not started or blocked.** What blocks the rest: the speech process isn't yet inside the app (F116, F128, F136), packaging needs Visual Studio Build Tools (F143, and Native AOT for the memory and start-up budgets), and a second or high-refresh monitor is needed for F7–F9.
+**Totals: 18 done, 9 partial, 3 not verified or not started.** What blocks the rest: a second or high-refresh monitor (F7, F8, F9), a touch screen (F12), Visual Studio Build Tools for packaging and Native AOT (F143, and the memory budget), and real devices for F136. Blur on content swaps (F2) and Glass (F11) are the two visual items left.
 
 ### Phase 1 exit test
 

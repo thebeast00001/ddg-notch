@@ -66,6 +66,8 @@ switch (args.Length > 0 ? args[0] : "bench")
         return Dictate(args.Skip(1).ToArray());
     case "summarize":
         return Summarize(args.Skip(1).ToArray());
+    case "policy-selftest":
+        return PolicySelfTest.Run();
     case "summary-selftest":
         return SummarySelfTest();
     case "keys":
@@ -702,6 +704,7 @@ int Dictate(string[] options)
 
     ISpeechEngine? engine = null;
     IStreamingEngine? streaming = null;
+    IslandLink? linkForPolicy = null;   // set once dictation exists; the model asks it whether the PC is in battery saver
 
     switch (pick)
     {
@@ -725,14 +728,20 @@ int Dictate(string[] options)
             if (!model.Languages.Contains(language)) { Console.WriteLine($"{model.Label} does not cover this language."); return 1; }
             if (!model.IsPresent(modelsRoot)) { Console.WriteLine($"{model.Label} is not in the models folder."); return 1; }
             Console.WriteLine($"Loading {model.Label}...");
-            engine = model.Create(modelsRoot, language, threads: 4);
-            engine!.Transcribe(new Clip(new float[16000], 16000));   // first run pays one-time costs
+            // In battery saver the island says so, and the model is let go after a minute unused (F128).
+            engine = new IdleEngine(model.Label, () =>
+            {
+                var made = model.Create(modelsRoot, language, threads: 4)!;
+                made.Transcribe(new Clip(new float[16000], 16000));   // first run pays one-time costs
+                return made;
+            }, () => linkForPolicy?.Saver == true, preload: true);
             break;
     }
 
     // Dictation and call notes take turns on one loaded model.
     ISpeechEngine? shared = engine == null ? null : new SharedEngine(engine, new object());
     var dictation = new Dictation(language, shared, streaming, key);
+    linkForPolicy = dictation.Link;
     var watcher = new KeyWatcher();
     watcher.Key += dictation.OnKey;
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; watcher.Stop(); };

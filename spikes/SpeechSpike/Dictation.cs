@@ -24,7 +24,13 @@ sealed class Dictation
 
     public IslandLink Link => _island;
     public bool IslandConnected => _island.Connected;
-    public void Greet() => _island.Send("idle");
+    public void Greet()
+    {
+        _island.Received += line => { if (line == "state?") _island.Send(_listening ? "listening" : "idle"); };
+        _island.Send("idle");
+    }
+
+    volatile bool _listening;   // the microphone is open
 
     public Dictation(string language, ISpeechEngine? engine, IStreamingEngine? streaming, string key)
     {
@@ -76,6 +82,7 @@ sealed class Dictation
         try
         {
             Cues.Start();
+            _listening = true;
             _island.Send("listening");
             _engine?.Warm();   // the connection opens while you speak, not after you stop
 
@@ -98,6 +105,7 @@ sealed class Dictation
                 live?.Add(chunk);
             });
             long keyUp = Stopwatch.GetTimestamp();
+            _listening = false;
             Cues.Stop();
 
             if (_cancelled) { Close(connecting); _island.Send("idle"); Console.WriteLine("  (cancelled: another key was pressed)"); return; }
@@ -134,6 +142,7 @@ sealed class Dictation
         }
         catch (Exception ex)
         {
+            _listening = false;
             _island.Send("failed");
             Console.WriteLine("  failed: " + ex.Message);
         }

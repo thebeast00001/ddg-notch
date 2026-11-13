@@ -29,7 +29,8 @@ sealed class IslandController : IDisposable
     public ScreenAdapter Screen { get; }
     public BluetoothAdapter Bluetooth { get; } = new();
     public AudioDeviceAdapter Audio { get; } = new();
-    public IReadOnlyList<Adapter> Adapters => new Adapter[] { Power, Media, Focus, Screen, Bluetooth, Audio };
+    public SpeechLink Speech { get; } = new();
+    public IReadOnlyList<Adapter> Adapters => new Adapter[] { Power, Media, Focus, Screen, Bluetooth, Audio, Speech };
     public Meter Meter { get; }
 
     readonly FeatureFlags _flags;
@@ -37,6 +38,15 @@ sealed class IslandController : IDisposable
     bool _settingsOpen;
     readonly ChargeEstimator _estimator = new();
     readonly DeviceNewsFilter _deviceNews = new();
+    readonly SpeechSession _speech = new();
+    string? _lastLookWhy;
+    readonly SecretStore _keys = new(Path.Combine(App.Home, "keys.bin"));
+    readonly DisplayFollower _follower;
+    readonly DispatcherQueueTimer _followCheck;
+    bool _moving;
+    bool? _helloReady;
+    readonly HashSet<string> _marksShown = new();
+    string? _policySent;
     PowerSnapshot? _lastPower;
     double _lastDeviceConnect = double.NegativeInfinity;
     Timer? _resourceSampler;
@@ -71,6 +81,8 @@ sealed class IslandController : IDisposable
         _dwell = Timer(80, () => { if (_inside && !_expanded) Expand(takeFocus: false); });
         _leave = Timer(300, () => { if (!_inside && _expanded && _focusOwner == IntPtr.Zero) Collapse(); });
         _deadline = Timer(0, () => Queue.Tick(Clock.Now));
+        _follower = new DisplayFollower(win.DisplayIdValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        _followCheck = Timer(0, () => OnFrontWindow(Screen.FrontWindow));
 
         Queue.Changed += (_, view) => Render(view);
         _music.Changed += () => { SyncMusicActivity(); Render(Queue.View); };
@@ -103,27 +115,115 @@ sealed class IslandController : IDisposable
         _flags.Changed += () => _ui.TryEnqueue(() => { _music.OnFlagsChanged(); ApplyLook(); });
         _win.SettingsChanged += () => _ui.TryEnqueue(ApplyLook);
         _settings.Changed += () => _ui.TryEnqueue(() => Render(Queue.View));
+        _win.DisplaysChanged += () => _ui.TryEnqueue(PlaceOnDisplay);
+        _flags.Changed += () => _ui.TryEnqueue(() => { if (!_flags.IsOn("follow-display")) PlaceOnDisplay(); });
         _win.Show();
         _win.RegisterHotkey();
         if (_flags.IsOn("diagnostics")) StartResourceSampler();
         // Warm the surface once, out of sight, while nothing is showing.
-        var warm = Timer(1200, () => { if (Queue.View.Primary == null && !_expanded) _surface.Warm(); });
+        var warm = Timer(1200, () => { if (Queue.View.Primary == null && !_expanded) _surface.Warm(); _ = HelloReadyAsync(); });
         warm.Start();
         if (!adapters) return;
 
         Power.Changed += snapshot => _ui.TryEnqueue(() => OnPower(snapshot));
-        Power.ModeChanged += _ => _ui.TryEnqueue(() => { UpdateMode(); ApplyLook(); });
+        Power.ModeChanged += _ => _ui.TryEnqueue(() => { UpdateMode(); ApplyLook(); SendPolicy(); });
         Media.Changed += playing => _ui.TryEnqueue(() => OnMedia(playing));
         Media.PositionChanged += clock => _ui.TryEnqueue(() => _music.OnPosition(clock));
         Focus.Changed += _ => _ui.TryEnqueue(UpdateMode);
         Screen.Changed += () => _ui.TryEnqueue(UpdateMode);
+        Screen.FrontWindowChanged += hwnd => _ui.TryEnqueue(() => OnFrontWindow(hwnd));
         Bluetooth.Changed += (before, after) => _ui.TryEnqueue(() => OnBluetooth(before, after));
         Audio.OutputChanged += (name, worn) => _ui.TryEnqueue(() => OnOutput(name, worn));
+        ListenToSpeech();
         foreach (var adapter in Adapters) adapter.Start();
 
         _lastPower = Power.Snapshot;
         OnMedia(Media.Current);
         UpdateMode();
+    }
+
+    // ── Displays (F7, F8) ──
+
+    static string Id(Microsoft.UI.Windowing.DisplayArea area) => area.DisplayId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Displays were added, removed or rescaled, or a taskbar moved: the island goes where it belongs
+    /// (the main display, or the one you're using when following is on) at that display's scaling,
+    /// in place, with no animation, because the screen itself just changed.
+    /// </summary>
+    void PlaceOnDisplay()
+    {
+        var all = Microsoft.UI.Windowing.DisplayArea.FindAll();
+        var present = new List<Microsoft.UI.Windowing.DisplayArea>();
+        for (int i = 0; i < all.Count; i++) present.Add(all[i]);   // indexed: enumerating this list fails in some Windows App SDK versions
+        var main = Microsoft.UI.Windowing.DisplayArea.Primary;
+        var active = IslandWindow.DisplayOf(Screen.FrontWindow);
+        string target = DisplayRules.Choose(_flags.IsOn("follow-display"), Id(main), active == null ? null : Id(active),
+                                            _win.DisplayIdValue.ToString(System.Globalization.CultureInfo.InvariantCulture), present.Select(Id).ToList());
+        var area = present.FirstOrDefault(a => Id(a) == target) ?? main;
+        _win.Place(area);
+        _body.Relayout();
+        Screen.WatchMonitor(_win.MonitorHandle);
+        _follower.PlacedOn(Id(area));
+        _lastPanel = null;
+        Render(Queue.View);
+    }
+
+    /// <summary>
+    /// Follow the display you're using (F8, off by default): once the window you're working in has
+    /// been on another display for 300 ms, the island shrinks to the sliver and fades here, and grows
+    /// from the sliver there. It never slides across the gap between screens, and never moves while
+    /// you are using it.
+    /// </summary>
+    void OnFrontWindow(IntPtr front)
+    {
+        _followCheck.Stop();
+        if (!_flags.IsOn("follow-display") || _moving) return;
+        var area = IslandWindow.DisplayOf(front);
+        string? active = area == null ? null : Id(area);
+        if (_follower.Observe(active, Clock.Now, busy: _expanded || _inside) != null && area != null)
+        {
+            _ = MoveTo(area);
+            return;
+        }
+        if (_follower.NextCheck is { } due)
+        {
+            _followCheck.Interval = TimeSpan.FromSeconds(Math.Max(0.01, due - Clock.Now + 0.01));
+            _followCheck.Start();
+        }
+    }
+
+    async Task MoveTo(Microsoft.UI.Windowing.DisplayArea area)
+    {
+        _moving = true;
+        try
+        {
+            var root = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(_win.Root);
+            _contentVersion++;
+            _surface.HideCapsule();
+            _surface.HideLyrics();
+            _body.ShowSatellite(false);
+            _body.GoTo(BodyShape.Sliver, Springs.Quick);
+            Fade(root, 0, 160);
+            await Task.Delay(170);
+            _win.Place(area);
+            _body.Relayout();
+            _body.Jump(BodyShape.Sliver);
+            Screen.WatchMonitor(_win.MonitorHandle);
+            Fade(root, 1, 120);
+            _lastPanel = null;
+            Render(Queue.View);   // grows from the sliver into whatever it should show
+        }
+        finally { _moving = false; }
+    }
+
+    void Fade(Microsoft.UI.Composition.Visual visual, float to, int ms)
+    {
+        var c = visual.Compositor;
+        var animation = c.CreateScalarKeyFrameAnimation();
+        animation.InsertKeyFrame(1f, to);
+        animation.Duration = TimeSpan.FromMilliseconds(MotionPolicy.Reduced ? 1 : ms);
+        visual.StartAnimation("Opacity", animation);
     }
 
     PowerPolicy Policy => PowerPolicy.For(Power.Snapshot, Power.Mode is EffectivePowerMode.BatterySaver or EffectivePowerMode.BetterBattery);
@@ -164,7 +264,46 @@ sealed class IslandController : IDisposable
         foreach (var activity in PowerRules.Changes(_lastPower, snapshot, _settings.Alerts, _estimator.TimeToFull(Clock.Now)))
             Queue.Post(activity, Clock.Now);
         _lastPower = snapshot;
-        UpdateMode();
+        // Reports arrive every few seconds on battery. Only a change of mode (low battery) or an open
+        // panel (its battery section) needs drawing; anything else the queue already redraws.
+        bool low = snapshot is { Percent: < ModeResolver.LowBatteryPercent, PluggedIn: false };
+        if (low != _lowBattery) { _lowBattery = low; UpdateMode(); }
+        else if (_expanded) Render(Queue.View);
+        SendPolicy();
+    }
+
+    bool _lowBattery;
+
+    /// <summary>
+    /// The speech process (F116, F128): what it reports becomes activities and marks; it is told the
+    /// power policy and asked for its state whenever it connects.
+    /// </summary>
+    void ListenToSpeech()
+    {
+        Speech.Line += line => _ui.TryEnqueue(() => OnSpeech(_speech.Apply(line, Clock.Now)));
+        Speech.Connected += () => _ui.TryEnqueue(() => { _policySent = null; SendPolicy(); Speech.Send("state?"); });
+        Speech.Lost += running => _ui.TryEnqueue(() => OnSpeech(running ? _speech.LinkLost(Clock.Now) : _speech.ProcessGone()));
+        Speech.ProcessExited += () => _ui.TryEnqueue(() => OnSpeech(_speech.ProcessGone()));
+    }
+
+    /// <summary>Applies what the speech process reported: the level goes straight to the meter, the rest through the queue.</summary>
+    void OnSpeech(SpeechChanges changes)
+    {
+        if (changes.Level is { } level) _surface.SetLevel(level);
+        foreach (var key in changes.Remove) Queue.Remove(key, Clock.Now);
+        foreach (var activity in changes.Post) Queue.Post(activity, Clock.Now);
+    }
+
+    /// <summary>
+    /// Tells the speech process how much work it may do (F128): in battery saver it unloads its models
+    /// sooner, stops preloading and checks for calls half as often.
+    /// </summary>
+    void SendPolicy()
+    {
+        string line = Policy.PreloadModels ? "policy full" : "policy saver";
+        if (line == _policySent || !Speech.IsConnected) return;
+        _policySent = line;
+        Speech.Send(line);
     }
 
     void OnMedia(NowPlaying? playing) => ShowMusic(playing, null, null);
@@ -229,9 +368,11 @@ sealed class IslandController : IDisposable
         ScheduleDeadline();
 
         // A full-screen app hides the island unless a dot must show (F133).
+        // Nothing hides a mark (F116): while something listens or records, the island stays visible.
         bool chosenApp = _settings.IsHidden(Screen.FrontProgram) && !_expanded;
-        bool hide = (Screen.Front == FrontState.FullScreen && view.Primary == null && view.Dots.Count == 0) ||
-                    (chosenApp && view.Primary?.Priority != Priority.ActNow);
+        bool hide = view.Marks.Count == 0 &&
+                    ((Screen.Front == FrontState.FullScreen && view.Primary == null && view.Dots.Count == 0) ||
+                     (chosenApp && view.Primary?.Priority != Priority.ActNow));
         if (hide) { if (_win.IsVisible) _win.Hide(); MusicLook(false); return; }
         if (!_win.IsVisible) _win.Show();
 
@@ -272,8 +413,20 @@ sealed class IslandController : IDisposable
 
         _surface.ShowSatellite(view.Satellite, _music.View, view.Waiting);
         _body.ShowSatellite(view.Satellite != null);
-        _body.ShowDot(view.Primary == null && view.Dots.Count > 0 ? view.Dots[0].Accent is Accent.None && view.Dots[0].Priority == Priority.ActNow ? Accent.NeedsYou : view.Dots[0].Accent : null);
+        _body.ShowDot(view.Primary == null && view.Dots.Count > 0
+            ? view.Dots[0].Mark != null ? view.Dots[0].Accent
+            : view.Dots[0].Accent is Accent.None && view.Dots[0].Priority == Priority.ActNow ? Accent.NeedsYou : view.Dots[0].Accent
+            : null);
+        AnnounceMarks(view);
         Shown?.Invoke(view.Primary?.Key ?? (view.Dots.Count > 0 ? "dot" : "rest"));
+    }
+
+    /// <summary>Narrator hears each new mark once, even when it shows only as the dot (F116, F12).</summary>
+    void AnnounceMarks(IslandView view)
+    {
+        foreach (var mark in view.Marks)
+            if (_marksShown.Add(mark.Key + "|" + mark.Title)) _surface.AnnounceMark(mark);
+        _marksShown.RemoveWhere(k => !view.Marks.Any(m => k == m.Key + "|" + m.Title));
     }
 
     /// <summary>
@@ -282,6 +435,7 @@ sealed class IslandController : IDisposable
     /// </summary>
     void MusicLook(bool show)
     {
+        Ambient.Allowed = Policy.Visualiser;   // battery saver: the equaliser rests too, as its row refills in this render
         var view = _music.View;
         bool coloured = show && view != null && view.ColoursOn && !Palette.Contrast;
         string state = coloured ? $"{view!.TrackKey}|{view.Colours.Base}" : "ink";
@@ -293,7 +447,14 @@ sealed class IslandController : IDisposable
             _surface.Backdrop.Show(coloured);
         }
         bool flow = coloured && view!.Playing && _win.IsVisible && Policy.Visualiser;
-        if (flow != _flowing) { _flowing = flow; _surface.Backdrop.Flow(flow); }
+        string why = $"look: show {show}, song {view != null}, colours {view?.ColoursOn}, playing {view?.Playing}, visible {_win.IsVisible}, visualiser {Policy.Visualiser}";
+        if (why != _lastLookWhy) { _lastLookWhy = why; App.Log(Environment.GetEnvironmentVariable("FORTY_OUT"), why); }
+        if (flow != _flowing)
+        {
+            _flowing = flow;
+            _surface.Backdrop.Flow(flow);
+            App.Log(Environment.GetEnvironmentVariable("FORTY_OUT"), flow ? "music colours flowing" : "music colours still");
+        }
     }
 
     CapsuleContent ContentFor(Activity primary) =>
@@ -336,7 +497,10 @@ sealed class IslandController : IDisposable
         var view = Queue.View;
         var primary = view.Primary ?? (_music.View != null ? MediaAdapter.ToActivity(_music.Playing! with { Playing = true }) : null);
         var others = new[] { view.Satellite }.Where(a => a != null).Select(a => a!).ToList();
-        var model = new PanelModel(primary, others, _music.View, BatteryNow(), Bluetooth.Devices, ModeLine(view.Mode));
+        foreach (var mark in view.Marks)   // every mark is listed in the panel, with its Stop button
+            if (mark.Key != primary?.Key && others.All(o => o.Key != mark.Key)) others.Insert(0, mark);
+        DateTimeOffset? recordingSince = _speech.CallSince is { } since ? DateTimeOffset.Now - TimeSpan.FromSeconds(Clock.Now - since) : null;
+        var model = new PanelModel(primary, others, _music.View, BatteryNow(), Bluetooth.Devices, ModeLine(view.Mode), recordingSince);
         // Power and position reports arrive often. Rebuilding an open panel each time would waste work
         // and take keyboard focus away from you, so it is rebuilt only when what it shows changes.
         if (_expanded && _lastPanel is { } shown && Same(shown, model) && _body.Shape.Name != "full") return;
@@ -433,7 +597,8 @@ sealed class IslandController : IDisposable
             _music.LyricsOn, _music.ColoursOn, _flags.IsOn("bluetooth"), _flags.IsOn("audio-output"), _flags.IsOn("hide-from-capture"), _flags.IsOn("glass"),
             _settings.Alerts.LowLevels, _settings.Alerts.FullLevel, _settings.Hidden, Screen.FrontProgram,
             Bluetooth.Devices.Select(d => (d, _settings.IsQuiet(d.Id))).ToList(), diagnostics,
-            typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0");
+            typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0",
+            _flags.IsOn("follow-display"), Microsoft.UI.Windowing.DisplayArea.FindAll().Count, _keys.Names, _helloReady == true);
     }
 
     /// <summary>The mode and why, in plain words, for the panel's footer (F132–F134 sub-feature).</summary>
@@ -453,6 +618,7 @@ sealed class IslandController : IDisposable
 
     static bool Same(PanelModel a, PanelModel b) =>
         Equals(a.Primary, b.Primary) && a.Others.SequenceEqual(b.Others) && a.ModeLine == b.ModeLine && a.Battery == b.Battery &&
+        (a.RecordingSince == null) == (b.RecordingSince == null) &&
         a.Devices.SequenceEqual(b.Devices) &&
         Equals(a.Music is { } m ? m with { Clock = default } : null, b.Music is { } n ? n with { Clock = default } : null);
 
@@ -496,7 +662,19 @@ sealed class IslandController : IDisposable
                 _ = Media.SetRepeatAsync(playing?.Repeat switch { RepeatMode.Off => RepeatMode.List, RepeatMode.List => RepeatMode.Track, _ => RepeatMode.Off });
                 break;
             case "quit": Application.Current.Exit(); break;
+            // Answers for the speech process, in its own words.
+            case "call-accept": Speech.Send("accept"); break;
+            case "call-decline":
+                Speech.Send("decline");
+                Queue.Remove(SpeechSession.CallKey, Clock.Now);   // the question goes at once; nothing is recorded
+                break;
+            case "call-stop": Speech.Send("stop"); break;
+            case "open-notes":
+                Speech.Send("open-notes");
+                Queue.Remove(SpeechSession.CallKey, Clock.Now);
+                break;
             case "settings":
+                if (_helloReady == null) _ = HelloReadyAsync().ContinueWith(_ => _ui.TryEnqueue(() => { if (_settingsOpen) Expand(takeFocus: false); }));
                 _settingsOpen = true;
                 _lastPanel = null;
                 Expand(takeFocus: false);
@@ -518,6 +696,9 @@ sealed class IslandController : IDisposable
             case var quiet when quiet.StartsWith("quiet:", StringComparison.Ordinal):
                 _settings.ToggleIn(Settings.QuietDevices, quiet[6..]);
                 break;
+            case var key when key.StartsWith("remove-key:", StringComparison.Ordinal):
+                _ = RemoveKeyAsync(key[11..]);
+                break;
             case "open-diagnostics":
                 string diagnosticsFolder = Path.Combine(App.Home, "diagnostics");
                 Directory.CreateDirectory(diagnosticsFolder);
@@ -535,6 +716,37 @@ sealed class IslandController : IDisposable
                 _flags.Set(flag, on ? FlagState.Off : FlagState.On);   // the flags' Changed event re-renders
                 break;
         }
+    }
+
+    // ── Sensitive actions (F121) ──
+
+    /// <summary>
+    /// Removes a stored service key after Windows Hello confirms it is you (face, fingerprint or PIN).
+    /// Where Windows Hello isn't set up, the Windows sign-in that protects the key file is the guard.
+    /// </summary>
+    async Task RemoveKeyAsync(string name)
+    {
+        if (!_keys.Names.Contains(name)) return;
+        bool ready = await HelloReadyAsync();
+        if (ready)
+        {
+            var result = await Windows.Security.Credentials.UI.UserConsentVerifierInterop.RequestVerificationForWindowAsync(
+                _win.Hwnd, $"Remove the {SettingsModel.KeyLabel(name)} key from this PC?");
+            if (result != Windows.Security.Credentials.UI.UserConsentVerificationResult.Verified) return;
+        }
+        _keys.Set(name, null);
+        if (_settingsOpen) Expand(takeFocus: false);   // the list updates in place
+    }
+
+    async Task<bool> HelloReadyAsync()
+    {
+        try
+        {
+            _helloReady ??= await Windows.Security.Credentials.UI.UserConsentVerifier.CheckAvailabilityAsync() ==
+                            Windows.Security.Credentials.UI.UserConsentVerifierAvailability.Available;
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or UnauthorizedAccessException) { _helloReady = false; }
+        return _helloReady.Value;
     }
 
     // ── Pointer and keyboard (MOTION.md 5 and 6) ──
@@ -635,6 +847,18 @@ sealed class IslandController : IDisposable
     public void DemoPower(PowerSnapshot snapshot) => _demoPower = snapshot;
     public void DemoCommand(string command) => OnCommand(command);
     public void DemoScrollSettings() => _surface.ScrollSettingsToEnd();
+    public void DemoSpeech(string line) => OnSpeech(_speech.Apply(line, Clock.Now));
+    public void DemoDisplaysChanged() => PlaceOnDisplay();
+
+    public string DemoSpeechState => $"link: {Speech.Status.Reason}; connected {_speech.Connected}; unconfirmed {_speech.Unconfirmed}";
+
+    /// <summary>Starts only the speech link, for the demo's pipe check; false if it could not start.</summary>
+    public bool DemoStartSpeech()
+    {
+        ListenToSpeech();
+        Speech.Start();
+        return Speech.Status.Availability == Availability.Available;
+    }
     PowerSnapshot? _demoPower;
 
     public void DemoMode(Mode mode)

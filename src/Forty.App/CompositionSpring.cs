@@ -10,16 +10,29 @@ namespace Forty.App;
 /// The target change and its cancelling term are written together, so they reach the screen in the
 /// same commit and nothing jumps, however late the commit lands (spike S2).
 /// Visuals read the value as the scalar "v" of <see cref="Props"/>.
+///
+/// A settled spring rests: its seventeen expressions stop and "v" holds the target as a plain value.
+/// The compositor evaluates every running expression on every frame it draws, so while anything moves
+/// (music's fluid colours, say), a hundred springs that are standing still would otherwise cost more
+/// than everything that is actually moving. A new term wakes the spring on the same frame.
 /// </summary>
 sealed class CompositionSpring
 {
     readonly ScalarKeyFrameAnimation _clock;
+    readonly ExpressionAnimation[] _terms = new ExpressionAnimation[AdditiveSpring.SlotCount];
+    readonly ExpressionAnimation _total;
+    bool _running;
+    int _restVersion;
 
     public AdditiveSpring Model { get; }
     public CompositionPropertySet Props { get; }
 
+    /// <summary>How many springs exist and how many are running right now (for diagnostics).</summary>
+    public static int Created, Running;
+
     public CompositionSpring(Compositor compositor, double initial)
     {
+        Created++;
         Model = new AdditiveSpring(initial);
         Props = compositor.CreatePropertySet();
         Props.InsertScalar("target", (float)initial);
@@ -30,16 +43,18 @@ sealed class CompositionSpring
             foreach (string name in new[] { "a", "c", "t", "s" }) Props.InsertScalar($"{name}{k}", 0f);
             Props.InsertScalar($"zw{k}", 1f);
             Props.InsertScalar($"wd{k}", 1f);
-            var term = compositor.CreateExpressionAnimation(
+            var term = _terms[k] = compositor.CreateExpressionAnimation(
                 $"Pow(2.718281828459, -p.zw{k} * p.t{k}) * (p.a{k} * Cos(p.wd{k} * p.t{k}) + p.c{k} * Sin(p.wd{k} * p.t{k}))");
             term.SetReferenceParameter("p", Props);
-            Props.StartAnimation($"s{k}", term);
+            Props.InsertScalar($"s{k}", 0f);
             sum.Append($" + p.s{k}");
         }
         Props.InsertScalar("v", (float)initial);
-        var total = compositor.CreateExpressionAnimation(sum.ToString());
-        total.SetReferenceParameter("p", Props);
-        Props.StartAnimation("v", total);
+        _total = compositor.CreateExpressionAnimation(sum.ToString());
+        _total.SetReferenceParameter("p", Props);
+        // Starts at rest: nothing is evaluated until the first move. FORTY_SPRING_REST=0 keeps every
+        // spring running, as before, to measure what resting saves.
+        if (!RestEnabled) Wake();
 
         // Each term runs on its own linear clock from 0 to 4 seconds, restarted when its slot is reused.
         _clock = compositor.CreateScalarKeyFrameAnimation();
@@ -49,6 +64,7 @@ sealed class CompositionSpring
 
         Model.TermAdded += term =>
         {
+            Wake();
             int k = term.Slot;
             Props.InsertScalar($"a{k}", (float)term.A);
             Props.InsertScalar($"c{k}", (float)term.C);
@@ -64,7 +80,40 @@ sealed class CompositionSpring
                 Props.InsertScalar($"c{k}", 0f);
             }
         };
-        Model.TargetChanged += target => Props.InsertScalar("target", (float)target);
+        Model.TargetChanged += target =>
+        {
+            Props.InsertScalar("target", (float)target);
+            if (!_running) Props.InsertScalar("v", (float)target);   // at rest the value is the target itself
+        };
+    }
+
+    void Wake()
+    {
+        int version = ++_restVersion;
+        if (!_running)
+        {
+            _running = true;
+            Running++;
+            for (int k = 0; k < _terms.Length; k++) Props.StartAnimation($"s{k}", _terms[k]);
+            Props.StartAnimation("v", _total);
+        }
+        _ = RestLater(version);
+    }
+
+    /// <summary>Every term's clock runs for <see cref="AdditiveSpring.ClockSeconds"/>; after that, if nothing new arrived, rest.</summary>
+    static readonly bool RestEnabled = Environment.GetEnvironmentVariable("FORTY_SPRING_REST") != "0";
+
+    async Task RestLater(int version)
+    {
+        if (!RestEnabled) return;
+        await Task.Delay(TimeSpan.FromSeconds(AdditiveSpring.ClockSeconds + 0.1));
+        if (version != _restVersion || !_running) return;
+        if (!Model.IsSettled(Clock.Now)) { _ = RestLater(version); return; }
+        _running = false;
+        Running--;
+        Props.StopAnimation("v");
+        for (int k = 0; k < _terms.Length; k++) { Props.StopAnimation($"s{k}"); Props.InsertScalar($"s{k}", 0f); }
+        Props.InsertScalar("v", (float)Model.Target);
     }
 
     public double Target => Model.Target;

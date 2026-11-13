@@ -30,11 +30,16 @@ sealed class Body
     public CompositionSpring R { get; }
     public CompositionSpring Top { get; }
     public CompositionSpring Satellite { get; }
+    /// <summary>The satellite's journey out of the capsule's end: 0 merged inside it, 1 at rest beside it (F5).</summary>
+    public CompositionSpring Split { get; }
     public CompositionSpring SatelliteOpacity { get; }
     public CompositionSpring Dot { get; }
 
     public BodyShape Shape { get; private set; } = BodyShape.Rest;
-    public bool SatelliteShown => Satellite.Target > 0;
+    public bool SatelliteShown => Split.Target > 0;
+
+    readonly CompositionPathGeometry _bridge;
+    double _bridgeFor = -1;
 
     public Body(IslandWindow win)
     {
@@ -45,6 +50,7 @@ sealed class Body
         R = new CompositionSpring(c, BodyShape.Rest.Radius);
         Top = new CompositionSpring(c, BodyShape.Rest.Top);
         Satellite = new CompositionSpring(c, 0);
+        Split = new CompositionSpring(c, 0);
         SatelliteOpacity = new CompositionSpring(c, 0);
         Dot = new CompositionSpring(c, 0);
 
@@ -67,24 +73,35 @@ sealed class Body
         bodyEdge.StrokeBrush = hairline;
         bodyEdge.StrokeThickness = 1f;
 
-        // The satellite grows out of the gap beside the capsule's right edge.
+        // The satellite leaves from inside the capsule's right end and travels to its place beside it,
+        // joined to the capsule by the liquid bridge until the neck snaps (F5, MOTION.md 5).
         var satellite = c.CreateEllipseGeometry();
-        Bind(satellite, "Center", "Vector2(layout.hostW * 0.5 + w.v * 0.5 + layout.gap + sat.v * 0.5, top.v + layout.inset + h.v * 0.5)");
+        Bind(satellite, "Center", "Vector2(layout.hostW * 0.5 + w.v * 0.5 - sat.v * 0.5 + (layout.gap + sat.v) * split.v, top.v + layout.inset + h.v * 0.5)");
         Bind(satellite, "Radius", "Vector2(Max(sat.v * 0.5, 0.01), Max(sat.v * 0.5, 0.01))");
         var satelliteSprite = c.CreateSpriteShape(satellite);
         satelliteSprite.FillBrush = fill;
         var satelliteEdge = c.CreateSpriteShape(satellite);
         satelliteEdge.StrokeBrush = hairline;
-        satelliteEdge.StrokeThickness = 1f;
+        Bind(satelliteEdge, "StrokeThickness", "Clamp((split.v - 0.8) * 5, 0, 1)");   // its own edge only once it is its own drop
+
+        _bridge = c.CreatePathGeometry();
+        var bridgeSprite = c.CreateSpriteShape(_bridge);
+        bridgeSprite.FillBrush = fill;
+        Bind(bridgeSprite, "Offset", "Vector2(layout.hostW * 0.5 + w.v * 0.5, top.v + layout.inset + h.v * 0.5)");
+        Bind(bridgeSprite, "Scale", "Vector2(sat.v / " + F(SatelliteSize) + ", sat.v / " + F(SatelliteSize) + ")");   // shrinks with a satellite that is leaving
 
         var shapes = c.CreateShapeVisual();
         shapes.Size = new Vector2((float)win.WidthDip, (float)win.HeightDip);
         shapes.Shapes.Add(bodySprite);
+        shapes.Shapes.Add(bridgeSprite);
         shapes.Shapes.Add(satelliteSprite);
         var edges = c.CreateShapeVisual();
         edges.Size = shapes.Size;
         edges.Shapes.Add(bodyEdge);
         edges.Shapes.Add(satelliteEdge);
+        // While the satellite and the capsule are one liquid shape, the hairline (which would draw a seam
+        // across the neck) steps back, and returns once the drop has separated.
+        Bind(edges, "Opacity", "1 - Clamp(Min(split.v, 1 - split.v) * 8, 0, 1)");
         Layers = c.CreateContainerVisual();
         Layers.Size = shapes.Size;
 
@@ -117,6 +134,8 @@ sealed class Body
     /// <summary>A clip in the body's exact shape, for layers that must not spill outside it.</summary>
     public CompositionGeometricClip CreateClip()
     {
+        // A rectangle clip with animated corners was tried (13 Nov): this Windows refuses to animate
+        // its corner radii, and with fixed corners it cost more per frame than this clip, not less.
         var geometry = _win.Compositor.CreateRoundedRectangleGeometry();
         Bind(geometry, "Size", "Vector2(Max(w.v, 1), Max(h.v, 1))");
         Bind(geometry, "CornerRadius", "Vector2(Min(r.v, Min(w.v, h.v) * 0.5), Min(r.v, Min(w.v, h.v) * 0.5))");
@@ -152,23 +171,18 @@ sealed class Body
         animation.SetReferenceParameter("r", R.Props);
         animation.SetReferenceParameter("top", Top.Props);
         animation.SetReferenceParameter("sat", Satellite.Props);
+        animation.SetReferenceParameter("split", Split.Props);
         animation.SetReferenceParameter("layout", _layout);
         target.StartAnimation(property, animation);
     }
+
+    static string F(double value) => value.ToString("0.0###", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Clips an overlay element (laid out over the whole window at the origin) to the body, so content
     /// never draws outside the shape while it morphs.
     /// </summary>
-    public void ClipToBody(UIElement element)
-    {
-        var c = _win.Compositor;
-        var geometry = c.CreateRoundedRectangleGeometry();
-        Bind(geometry, "Size", "Vector2(Max(w.v, 1), Max(h.v, 1))");
-        Bind(geometry, "CornerRadius", "Vector2(Min(r.v, Min(w.v, h.v) * 0.5), Min(r.v, Min(w.v, h.v) * 0.5))");
-        Bind(geometry, "Offset", "Vector2((layout.hostW - w.v) * 0.5, top.v + layout.inset)");
-        ElementCompositionPreview.GetElementVisual(element).Clip = c.CreateGeometricClip(geometry);
-    }
+    public void ClipToBody(UIElement element) => ElementCompositionPreview.GetElementVisual(element).Clip = CreateClip();
 
     /// <summary>
     /// Spike S6, the Glass look (not working yet; FORTY_GLASS=1 turns it on for testing): Windows' acrylic, inside the body shape only. An acrylic backdrop
@@ -221,11 +235,13 @@ sealed class Body
     {
         ElementCompositionPreview.SetIsTranslationEnabled(element, true);
         var animation = _win.Compositor.CreateExpressionAnimation(
-            "Vector3(layout.hostW * 0.5 + w.v * 0.5 + layout.gap, top.v + layout.inset + h.v * 0.5 - 18, 0)");
+            "Vector3(layout.hostW * 0.5 + w.v * 0.5 - sat.v + (layout.gap + sat.v) * split.v, top.v + layout.inset + h.v * 0.5 - 18, 0)");
         animation.Target = "Translation";
         animation.SetReferenceParameter("w", W.Props);
         animation.SetReferenceParameter("h", H.Props);
         animation.SetReferenceParameter("top", Top.Props);
+        animation.SetReferenceParameter("sat", Satellite.Props);
+        animation.SetReferenceParameter("split", Split.Props);
         animation.SetReferenceParameter("layout", _layout);
         element.StartAnimation(animation);
     }
@@ -241,20 +257,40 @@ sealed class Body
         if (shape == Shape && W.Model.IsSettled(now) && H.Model.IsSettled(now) && Top.Model.IsSettled(now)) return;
         Shape = shape;
         GrowRegion(shape);
+        if (SatelliteShown) BuildBridge();   // a taller or shorter capsule end needs its own neck
         W.To(shape.Width, spring);
         H.To(shape.Height, spring);
         R.To(shape.Radius, spring);
         Top.To(shape.Top, spring);
     }
 
-    /// <summary>Shows or hides the satellite circle (F5).</summary>
+    /// <summary>
+    /// Shows or hides the satellite (F5). Arriving, it pulls out of the capsule's right end as a drop on
+    /// a lively spring, joined by the liquid bridge until the neck snaps; leaving, it is drawn back in
+    /// and absorbed, shrinking on the way. Its content fades in only once it has separated.
+    /// </summary>
     public void ShowSatellite(bool show)
     {
         if (show == SatelliteShown) return;
+        if (show)
+        {
+            BuildBridge();
+            Satellite.To(SatelliteSize, Springs.Quick);   // hidden inside the capsule's end while it starts out
+        }
+        else Satellite.To(0, Springs.Quick);
         // Targets first, so the region below already makes room for a satellite that is arriving.
-        Satellite.To(show ? SatelliteSize : 0, show ? Springs.Move : Springs.Quick);
+        Split.To(show ? 1 : 0, show ? Feel.Lively : Springs.Quick);
         SatelliteOpacity.To(show ? 1 : 0, show ? Springs.Move : Springs.Quick, isFade: true);
         GrowRegion(Shape);
+    }
+
+    /// <summary>The neck's morph for the capsule's current end radius; rebuilt only when that changes.</summary>
+    void BuildBridge()
+    {
+        double a = Math.Min(Shape.Radius, Shape.Height / 2);
+        if (Math.Abs(a - _bridgeFor) < 0.5) return;
+        _bridgeFor = a;
+        Bridge.Bind(_bridge, a, SatelliteSize / 2, SatelliteGap, Split.Props);
     }
 
     /// <summary>Shows the dot in the colour of what it stands for, or hides it.</summary>
@@ -269,7 +305,7 @@ sealed class Body
         double now = Clock.Now;
         double w = Math.Max(W.Model.Sample(now).X, destination.Width);
         double bottom = Math.Max(Top.Model.Sample(now).X + H.Model.Sample(now).X, destination.Top + destination.Height);
-        double satellite = SatelliteShown || Satellite.Model.Sample(now).X > 0.5 ? 2 * (SatelliteGap + SatelliteSize) : 0;
+        double satellite = SatelliteShown || Split.Model.Sample(now).X > 0.01 ? 2 * (SatelliteGap + SatelliteSize) + 24 : 0;   // room for a lively overshoot
         _win.SetRegionDip(w + satellite + 2 * RegionPad, bottom + OvershootPad);
         int version = ++_regionVersion;
         _ = ShrinkRegionLater(version);
@@ -279,6 +315,25 @@ sealed class Body
     {
         await Task.Delay(TimeSpan.FromSeconds(Springs.Move.SettleSeconds() + 0.35));
         if (version == _regionVersion) SnapRegion();   // otherwise another morph started meanwhile
+    }
+
+    /// <summary>After the window moved to another display (F7, F8): its width and inset in DIPs may differ slightly.</summary>
+    public void Relayout()
+    {
+        _layout.InsertScalar("hostW", (float)_win.WidthDip);
+        _layout.InsertScalar("inset", (float)_win.TopInsetDip);
+        SnapRegion();
+    }
+
+    /// <summary>Puts the body straight into a shape with no motion, for an island arriving on another display.</summary>
+    public void Jump(BodyShape shape)
+    {
+        Shape = shape;
+        W.Set(shape.Width);
+        H.Set(shape.Height);
+        R.Set(shape.Radius);
+        Top.Set(shape.Top);
+        SnapRegion();
     }
 
     void SnapRegion()
@@ -305,6 +360,8 @@ static class Palette
     public static Windows.UI.Color Done => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.Highlight) : Ink(255, 0x3B, 0xD6, 0x71);
     public static Windows.UI.Color NeedsYou => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.Highlight) : Ink(255, 0xFF, 0xB0, 0x20);
     public static Windows.UI.Color Error => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.Highlight) : Ink(255, 0xFF, 0x45, 0x3A);
+    /// <summary>A live microphone or recording: red, and in a contrast theme the highlight colour, like every state.</summary>
+    public static Windows.UI.Color Recording => Error;
     public static Windows.UI.Color Primary => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.WindowText) : Ink(255, 255, 255, 255);
     public static Windows.UI.Color Secondary => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.WindowText) : Ink(153, 255, 255, 255);
     public static Windows.UI.Color Tertiary => Contrast ? Sys(Windows.UI.ViewManagement.UIElementType.WindowText) : Ink(102, 255, 255, 255);
@@ -317,6 +374,7 @@ static class Palette
         Accent.Done => Done,
         Accent.NeedsYou => NeedsYou,
         Accent.Error => Error,
+        Accent.Recording => Recording,
         _ => otherwise,
     };
 }

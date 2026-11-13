@@ -6,13 +6,14 @@ namespace Forty.Core;
 /// <param name="Waiting">How many more would show if there were room; drawn as "+N" on the satellite.</param>
 /// <param name="Dots">Activities the current mode allows only as the sliver dot.</param>
 /// <param name="Mode">The mode these rules were applied in.</param>
-public sealed record IslandView(Activity? Primary, Activity? Satellite, int Waiting, IReadOnlyList<Activity> Dots, Mode Mode)
+/// <param name="Marks">Everything that is listening, recording or watching right now, most important first (F116).</param>
+public sealed record IslandView(Activity? Primary, Activity? Satellite, int Waiting, IReadOnlyList<Activity> Dots, Mode Mode, IReadOnlyList<Activity> Marks)
 {
-    public static readonly IslandView Rest = new(null, null, 0, Array.Empty<Activity>(), Mode.Normal);
+    public static readonly IslandView Rest = new(null, null, 0, Array.Empty<Activity>(), Mode.Normal, Array.Empty<Activity>());
 
     public bool SameAs(IslandView other) =>
         Equals(Primary, other.Primary) && Equals(Satellite, other.Satellite) && Waiting == other.Waiting &&
-        Mode == other.Mode && Dots.SequenceEqual(other.Dots);
+        Mode == other.Mode && Dots.SequenceEqual(other.Dots) && Marks.SequenceEqual(other.Marks);
 }
 
 /// <summary>
@@ -28,6 +29,9 @@ public sealed record IslandView(Activity? Primary, Activity? Satellite, int Wait
 /// <item>A lifetime starts when an activity is first shown, not when it was posted. Something good to
 /// know that waited more than 10 seconds without being shown is dropped as stale.</item>
 /// <item>Routine (digest) activities never show; they are kept for the brief.</item>
+/// <item>A mark (something listening, recording or watching, F116) is always visible, in every mode:
+/// as the capsule when it is the thing you are doing, as the satellite beside anything else, or as
+/// the dot when nothing else shows. No mode, priority or hold can hide it.</item>
 /// </list>
 ///
 /// Time is passed in by the caller (seconds on any steady clock), so every rule can be tested exactly.
@@ -160,6 +164,7 @@ public sealed class ActivityQueue
         var dots = new List<Activity>();
         foreach (var e in _entries.Values)
         {
+            if (e.Activity.QuietMark) continue;   // marks are placed in step 5
             switch (ModeRules.For(Mode, e.Activity.Priority))
             {
                 case Presentation.Capsule: candidates.Add(e); break;
@@ -183,7 +188,27 @@ public sealed class ActivityQueue
         if (primary != null) primary.ShownAt ??= now;
         if (satellite != null) satellite.ShownAt ??= now;
 
-        var view = new IslandView(primary?.Activity, satellite?.Activity, waiting, dots, Mode);
+        // 5. Marks: the most important one not already on show takes the satellite beside the capsule,
+        // or the dot when the capsule is empty. Whatever held the satellite waits.
+        var marks = _entries.Values.Select(e => e.Activity).Where(a => a.Mark != null).OrderBy(a => a.Mark).ThenBy(a => a.Key, StringComparer.Ordinal).ToList();
+        Activity? shownSatellite = satellite?.Activity;
+        var pending = marks.FirstOrDefault(m => m.Key != primary?.Activity.Key && m.Key != shownSatellite?.Key);
+        if (pending != null)
+        {
+            if (primary != null)
+            {
+                if (shownSatellite != null) waiting++;
+                shownSatellite = pending;
+            }
+            else
+            {
+                dots.RemoveAll(d => d.Key == pending.Key);
+                dots.Insert(0, pending);
+            }
+            if (_entries.TryGetValue(pending.Key, out var markEntry)) markEntry.ShownAt ??= now;
+        }
+
+        var view = new IslandView(primary?.Activity, shownSatellite, waiting, dots, Mode, marks);
         if (view.SameAs(View)) return;
         var before = View;
         View = view;

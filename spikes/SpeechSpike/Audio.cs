@@ -145,12 +145,27 @@ static class Microphone
         {
             FormatTag = 1, Channels = 1, SamplesPerSec = rate, AvgBytesPerSec = rate * 2, BlockAlign = 2, BitsPerSample = 16,
         };
-        int opened = waveInOpen(out IntPtr handle, WaveMapper, ref format, IntPtr.Zero, IntPtr.Zero, 0);
-        if (opened != 0) throw new InvalidOperationException($"Could not open the microphone (error {opened}).");
-
         int headerSize = Marshal.SizeOf<WaveHeader>();
-        var headers = new IntPtr[bufferCount];
         var collected = new List<short>(rate * 30);
+        IntPtr handle = IntPtr.Zero;
+        var headers = new IntPtr[bufferCount];
+
+        // The wave mapper opens whichever microphone is the default at that moment.
+        void Open()
+        {
+            int opened = waveInOpen(out handle, WaveMapper, ref format, IntPtr.Zero, IntPtr.Zero, 0);
+            if (opened != 0) throw new InvalidOperationException($"Could not open the microphone (error {opened}).");
+            headers = new IntPtr[bufferCount];
+            for (int i = 0; i < bufferCount; i++)
+            {
+                headers[i] = Marshal.AllocHGlobal(headerSize);
+                var header = new WaveHeader { Data = Marshal.AllocHGlobal(bufferBytes), BufferLength = bufferBytes };
+                Marshal.StructureToPtr(header, headers[i], false);
+                waveInPrepareHeader(handle, headers[i], headerSize);
+                waveInAddBuffer(handle, headers[i], headerSize);
+            }
+            waveInStart(handle);
+        }
 
         void Collect(IntPtr headerPtr, bool requeue)
         {
@@ -167,27 +182,12 @@ static class Microphone
             if (requeue) waveInAddBuffer(handle, headerPtr, headerSize);
         }
 
-        try
+        // Stops this device, keeps what it had already heard, and frees its buffers.
+        void Close()
         {
-            for (int i = 0; i < bufferCount; i++)
-            {
-                headers[i] = Marshal.AllocHGlobal(headerSize);
-                var header = new WaveHeader { Data = Marshal.AllocHGlobal(bufferBytes), BufferLength = bufferBytes };
-                Marshal.StructureToPtr(header, headers[i], false);
-                waveInPrepareHeader(handle, headers[i], headerSize);
-                waveInAddBuffer(handle, headers[i], headerSize);
-            }
-            waveInStart(handle);
-            while (!stop())
-            {
-                Thread.Sleep(20);
-                foreach (var h in headers) Collect(h, requeue: true);
-            }
+            if (handle == IntPtr.Zero) return;
             waveInReset(handle);   // returns every buffer, including the partly filled one
-            foreach (var h in headers) Collect(h, requeue: false);
-        }
-        finally
-        {
+            foreach (var h in headers) if (h != IntPtr.Zero) Collect(h, requeue: false);
             foreach (var h in headers)
             {
                 if (h == IntPtr.Zero) continue;
@@ -196,6 +196,32 @@ static class Microphone
                 Marshal.FreeHGlobal(h);
             }
             waveInClose(handle);
+            handle = IntPtr.Zero;
+        }
+
+        // F136: if the default microphone changes while you speak (a headset plugged in, Bluetooth
+        // dropping), recording continues on the new one; the words already heard are kept.
+        string? device = DefaultDevice.CaptureId(0);
+        long nextCheck = Environment.TickCount64 + 250;
+        try
+        {
+            Open();
+            while (!stop())
+            {
+                Thread.Sleep(20);
+                foreach (var h in headers) Collect(h, requeue: true);
+                if (Environment.TickCount64 < nextCheck) continue;
+                nextCheck = Environment.TickCount64 + 250;
+                string? now = DefaultDevice.CaptureId(0);
+                if (now == null || now == device) continue;
+                device = now;
+                Close();
+                Open();
+            }
+        }
+        finally
+        {
+            Close();
         }
         return new Clip(collected.Select(s => s / 32768f).ToArray(), rate);
     }

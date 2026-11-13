@@ -43,7 +43,7 @@ public enum FrontState { Normal, Maximized, FullScreen }
 /// </summary>
 public sealed class ScreenAdapter : Adapter
 {
-    readonly IntPtr _monitor;
+    IntPtr _monitor;
     readonly WinEventProc _callback;   // kept alive for as long as the hooks exist
     IntPtr _hookForeground, _hookMinimize, _hookLocation, _front;
 
@@ -62,6 +62,20 @@ public sealed class ScreenAdapter : Adapter
 
     /// <summary>Raised when any of the three properties changes.</summary>
     public event Action? Changed;
+
+    /// <summary>The window you are using changed (it may be on another display, F8). Raised on the UI thread.</summary>
+    public event Action<IntPtr>? FrontWindowChanged;
+
+    public IntPtr FrontWindow => _front;
+
+    /// <summary>The island moved to another display: full screen and maximised are judged against that one now.</summary>
+    public void WatchMonitor(IntPtr monitor)
+    {
+        if (monitor == _monitor) return;
+        _monitor = monitor;
+        _programChanged = true;   // forces a fresh report
+        Evaluate();
+    }
 
     protected override void OnStart()
     {
@@ -95,6 +109,7 @@ public sealed class ScreenAdapter : Adapter
                     if (program != FrontProgram) { FrontProgram = program; _programChanged = true; }
                 }
             }
+            if (front != IntPtr.Zero) FrontWindowChanged?.Invoke(front);
         }
         Evaluate();
     }

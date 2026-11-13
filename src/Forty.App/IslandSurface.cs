@@ -28,12 +28,15 @@ sealed record BatteryView(int Percent, bool Charging, bool PluggedIn, bool Saver
 sealed record CapsuleContent(Activity Activity, MusicView? Music, BatteryView? Battery)
 {
     /// <summary>Content with the same key updates in place; a new key swaps the content over.</summary>
-    public string Key => Activity.Key + "|" + Music?.TrackKey;
+    public string Key => Activity.Key + "|" + Music?.TrackKey + "|" + (Meter ? "meter" : Activity.Actions?.Command);
+
+    /// <summary>A live microphone level shows while you are being listened to.</summary>
+    public bool Meter => Activity.Mark == Sense.Microphone && Activity.Priority == Priority.ActNow && Music == null;
 }
 
 /// <summary>What the expanded panel shows.</summary>
 sealed record PanelModel(Activity? Primary, IReadOnlyList<Activity> Others, MusicView? Music, BatteryView? Battery,
-                         IReadOnlyList<BluetoothState> Devices, string ModeLine);
+                         IReadOnlyList<BluetoothState> Devices, string ModeLine, DateTimeOffset? RecordingSince = null);
 
 /// <summary>
 /// The content inside the body, built in layers so every change is one gesture with depth:
@@ -62,8 +65,10 @@ sealed partial class IslandSurface
     readonly Part _panelPart;
     Part? _panelArt;
     (double X, double Y, double Scale)? _travelFrom;
+    readonly List<(FrameworkElement From, FrameworkElement To)> _travels = new();   // shared elements for this opening (F4)
     Border? _progressFill;
-    TextBlock? _elapsed, _remaining;
+    TextBlock? _elapsed, _remaining, _recording;
+    DateTimeOffset? _recordingSince;
     PlaybackClock _progressClock;
     readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
 
@@ -71,6 +76,8 @@ sealed partial class IslandSurface
 
     /// <summary>Your presses on the panel: media commands, toggles, quit. Nothing presses them for you.</summary>
     public event Action<string>? Command;
+
+    void Send(string command) => Command?.Invoke(command);
 
     public IslandSurface(IslandWindow win, Body body)
     {
@@ -81,7 +88,7 @@ sealed partial class IslandSurface
         win.Overlay.Children.Add(_layer);
         body.ClipToBody(_layer);
 
-        _rows = new[] { new CapsuleRow(win), new CapsuleRow(win) };
+        _rows = new[] { new CapsuleRow(win, Send), new CapsuleRow(win, Send) };
         foreach (var row in _rows) _layer.Children.Add(row.Root);
         _lyrics = new[] { new LyricRow(win), new LyricRow(win) };
         foreach (var row in _lyrics) _layer.Children.Add(row.Root);
@@ -97,9 +104,11 @@ sealed partial class IslandSurface
         _satellite.Children.Add(_satelliteBadge);
         win.Overlay.Children.Add(_satellite);
         body.PinToSatellite(_satellite);
-        var satelliteFade = win.Compositor.CreateExpressionAnimation("Clamp(s.v, 0, 1)");
+        // The satellite's glyph or cover appears only once the drop has pulled clear of the capsule.
+        var satelliteFade = win.Compositor.CreateExpressionAnimation("Clamp(s.v, 0, 1) * Clamp((split.v - 0.6) * 3, 0, 1)");
         satelliteFade.Target = "Opacity";
         satelliteFade.SetReferenceParameter("s", body.SatelliteOpacity.Props);
+        satelliteFade.SetReferenceParameter("split", body.Split.Props);
         _satellite.StartAnimation(satelliteFade);
 
         _panelContent = new StackPanel { Spacing = 14, Padding = PanelPadding };
@@ -131,11 +140,20 @@ sealed partial class IslandSurface
     /// <summary>The capsule's shape for some content: label plus whatever the trailing slot holds.</summary>
     public static BodyShape ShapeFor(CapsuleContent content, bool touch)
     {
-        double trailing = content.Music != null ? 20
+        double trailing = content.Music != null || content.Meter ? 20
+            : content.Activity.Actions is { } actions ? ActionsWidth(actions)
             : content.Battery != null ? 28 + 6 + Measure($"{content.Battery.Percent}%", 13, FontWeights.SemiBold)
             : string.IsNullOrEmpty(content.Activity.Detail) ? 0 : Measure(content.Activity.Detail, 13, FontWeights.SemiBold);
         return CapsuleLayout.Measure(Measure(content.Activity.Title, 13, FontWeights.SemiBold), trailing, touch);
     }
+
+    /// <summary>The width of the capsule's buttons: each is its label plus 12 DIPs a side, 6 apart.</summary>
+    static double ActionsWidth(ActivityActions actions) =>
+        Measure(actions.Label, 12, FontWeights.SemiBold) + 24 +
+        (actions.SecondLabel is { } second ? 6 + Measure(second, 12, FontWeights.SemiBold) + 24 : 0);
+
+    /// <summary>The live microphone level, while the capsule shows Listening.</summary>
+    public void SetLevel(double level) => _rows[_activeRow].SetLevel(level);
 
     /// <summary>
     /// The island's shape for a lyric line: as wide as the line plus breathing room, between 168 and
@@ -238,6 +256,7 @@ sealed partial class IslandSurface
     public double ShowPanel(PanelModel model, bool opening, double capsuleWidth)
     {
         bool fromSettings = _panel.Width != BodyShape.Panel.Width;
+        _capsuleWasShown = _rows[_activeRow].Visible;   // only a capsule on screen has anything to travel
         ResetPanelWidth();
         if (fromSettings) opening = true;
         foreach (var row in _rows) if (row.Visible) row.Leave(toScale: 0.96);
@@ -245,18 +264,22 @@ sealed partial class IslandSurface
         _panelContent.Children.Clear();
         _panelArt = null;
         _travelFrom = null;
+        _travels.Clear();
         _progressFill = null;
+        _recording = null;
+        _recordingSince = model.RecordingSince;
         _clockTimer.Stop();
 
         if (model.Music is { } music && model.Primary?.Key == MediaAdapter.ActivityKey) AddMusic(music);
         else if (model.Primary is { } p) AddHeader(p, capsuleWidth);
         else _panelContent.Children.Add(Text("Nothing happening", 15, FontWeights.SemiBold, Palette.Primary));
 
-        if (model.Battery is { } battery && (model.Music == null || model.Primary?.Source == "power")) AddBattery(battery);
+        if (model.Battery is { } battery && (model.Music == null || model.Primary?.Source == "power")) AddBattery(battery, travel: model.Primary?.Source == "power");
         if (model.Music is { } other && model.Primary?.Key != MediaAdapter.ActivityKey) AddMiniPlayer(other);
         foreach (var activity in model.Others.Where(a => a.Key != MediaAdapter.ActivityKey).Take(3)) AddLine(activity);
         AddDevices(model.Devices);
         AddFooter(model.ModeLine);
+        if (_recording != null) { UpdateTimes(); _clockTimer.Start(); }   // the call's elapsed time, while the panel is open
 
         _panel.IsHitTestVisible = true;
         _panelContent.Measure(new Windows.Foundation.Size(BodyShape.Panel.Width, double.PositiveInfinity));
@@ -281,6 +304,14 @@ sealed partial class IslandSurface
                 _panelArt.Enter(0, fromScale: fs, spring: Springs.Move);
                 _panelArt.Nudge(0, 0, Springs.Move);
             }
+            if (!MotionPolicy.Reduced && _capsuleWasShown && (_panelArt != null || _travels.Count > 0))
+            {
+                // The panel's content (and with it the travelling copies) starts in at 70 ms: the capsule's
+                // copies go at that same moment, so there is always exactly one of each.
+                var row = _rows[_activeRow];
+                _ = HideLater(row, 70);
+            }
+            Travel();
         }
         else
         {
@@ -288,6 +319,41 @@ sealed partial class IslandSurface
             _panelArt?.Enter(0, fromScale: 1);
         }
         return height;
+    }
+
+    static async Task HideLater(CapsuleRow row, int ms)
+    {
+        await Task.Delay(ms);
+        if (!row.Visible) row.HideShared();   // the row is still leaving, not showing something new
+    }
+
+    /// <summary>
+    /// The rest of the shared elements (F4): each value the capsule showed (a detail, the battery gauge
+    /// and percentage) travels from where it was in the capsule to its place in the panel, growing or
+    /// shrinking on the way, on the same spring as the body. Positions are read from the laid-out
+    /// panel, so nothing is guessed; a shared element is never shown twice, because the capsule's
+    /// copy is already clearing as this one arrives.
+    /// </summary>
+    bool _capsuleWasShown;
+
+    void Travel()
+    {
+        if (_travels.Count == 0 || MotionPolicy.Reduced || !_capsuleWasShown) { _travels.Clear(); return; }
+        _panel.UpdateLayout();
+        foreach (var (from, to) in _travels)
+        {
+            if (from.ActualWidth <= 0 || to.ActualWidth <= 0 || from.Visibility != Visibility.Visible) continue;
+            var a = from.TransformToVisual(_layer).TransformBounds(new Windows.Foundation.Rect(0, 0, from.ActualWidth, from.ActualHeight));
+            var b = to.TransformToVisual(_layer).TransformBounds(new Windows.Foundation.Rect(0, 0, to.ActualWidth, to.ActualHeight));
+            double scale = Math.Clamp(a.Height / Math.Max(1, b.Height), 0.3, 3);
+            to.CenterPoint = new Vector3((float)(to.ActualWidth / 2), (float)(to.ActualHeight / 2), 0);
+            double dx = (a.X + a.Width / 2) - (b.X + b.Width / 2), dy = (a.Y + a.Height / 2) - (b.Y + b.Height / 2);
+            var part = new Part(to, _win.Compositor, 1);
+            part.Place(dx, dy, scale);
+            part.Enter(0, fromScale: scale, spring: Springs.Move);
+            part.Nudge(0, 0, Springs.Move);
+        }
+        _travels.Clear();
     }
 
     /// <summary>
@@ -350,7 +416,10 @@ sealed partial class IslandSurface
         top.Children.Add(cover);
 
         var words = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
-        words.Children.Add(Text(music.Title, 17, FontWeights.SemiBold, Palette.Primary, display: true, trim: true));
+        var songTitle = Text(music.Title, 17, FontWeights.SemiBold, Palette.Primary, display: true, trim: true);
+        songTitle.HorizontalAlignment = HorizontalAlignment.Left;
+        words.Children.Add(songTitle);
+        _travels.Add((_rows[_activeRow].LabelElement, songTitle));
         words.Children.Add(Text(music.Artist, 13, FontWeights.Normal, Palette.Secondary, trim: true));
         if (music.AppName.Length > 0) words.Children.Add(Text(music.AppName, 11, FontWeights.Normal, Palette.Tertiary, trim: true));
         Grid.SetColumn(words, 1);
@@ -445,6 +514,7 @@ sealed partial class IslandSurface
 
     void UpdateTimes()
     {
+        if (_recording != null && _recordingSince is { } since) _recording.Text = Time(DateTimeOffset.Now - since);
         if (_elapsed == null || _remaining == null) return;
         var at = _progressClock.At(DateTimeOffset.Now);
         _elapsed.Text = Time(at);
@@ -484,8 +554,11 @@ sealed partial class IslandSurface
         _travelFrom = (-capsuleWidth / 2 + 12 - (-BodyShape.Panel.Width / 2 + 22), 6 - 20, 16.0 / 22);
         var title = Text(p.Title, 16, FontWeights.SemiBold, Palette.Primary, display: true, trim: true);
         title.VerticalAlignment = VerticalAlignment.Center;
+        title.HorizontalAlignment = HorizontalAlignment.Left;   // its box is the text, so it travels to the right spot
+        _travels.Add((_rows[_activeRow].LabelElement, title));
         var detail = Text(p.Detail ?? "", 16, FontWeights.SemiBold, Palette.Secondary);
         detail.VerticalAlignment = VerticalAlignment.Center;
+        if (!string.IsNullOrEmpty(p.Detail)) _travels.Add((_rows[_activeRow].DetailElement, detail));
         Typography.SetNumeralAlignment(detail, FontNumeralAlignment.Tabular);
         Grid.SetColumn(title, 1);
         Grid.SetColumn(detail, 2);
@@ -496,9 +569,35 @@ sealed partial class IslandSurface
         var said = Text(p.Narration, 13, FontWeights.Normal, Palette.Secondary);
         said.TextWrapping = TextWrapping.Wrap;
         _panelContent.Children.Add(said);
+        if (p.Actions is { } actions)
+        {
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            buttons.Children.Add(ActionButton(actions.Label, true, actions.Command));
+            if (actions.SecondLabel is { } second && actions.SecondCommand is { } secondCommand) buttons.Children.Add(ActionButton(second, false, secondCommand));
+            _panelContent.Children.Add(buttons);
+        }
     }
 
-    void AddBattery(BatteryView b)
+    /// <summary>A panel button for an activity's answer: the first one filled, the second quiet.</summary>
+    Button ActionButton(string label, bool primary, string command)
+    {
+        var button = new Button
+        {
+            Content = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold,
+                                      Foreground = Brush(primary ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary) },
+            Height = 32, CornerRadius = new CornerRadius(16), Padding = new Thickness(18, 0, 18, 0), BorderThickness = new Thickness(0),
+            Background = Brush(primary ? Palette.Primary : Windows.UI.Color.FromArgb(34, 255, 255, 255)),
+        };
+        button.CenterPoint = new Vector3(40, 16, 0);
+        var press = new Part(button, _win.Compositor, 1);
+        button.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => press.Place(0, 0, 0.94)), true);
+        button.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => press.Enter(0, fromScale: 0.94, spring: Springs.Press)), true);
+        AutomationProperties.SetName(button, label);
+        button.Click += (_, _) => Command?.Invoke(command);
+        return button;
+    }
+
+    void AddBattery(BatteryView b, bool travel = false)
     {
         var row = new Grid { ColumnSpacing = 14 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -506,10 +605,13 @@ sealed partial class IslandSurface
         var gauge = new BatteryGauge(_win.Compositor, 46, 22);
         gauge.Show(b.Percent, b.Charging, sweep: false);
         row.Children.Add(gauge.Root);
+        if (travel) _travels.Add((_rows[_activeRow].GaugeElement, gauge.Root));
         var words = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
         var big = Text($"{b.Percent}%", 22, FontWeights.SemiBold, Palette.Primary, display: true);
         Typography.SetNumeralAlignment(big, FontNumeralAlignment.Tabular);
+        big.HorizontalAlignment = HorizontalAlignment.Left;
         words.Children.Add(big);
+        if (travel) _travels.Add((_rows[_activeRow].PercentElement, big));
         string state = b.Charging ? "Charging" : b.PluggedIn ? "Plugged in, not charging" : "On battery";
         words.Children.Add(Text(state + (b.TimeLine is { } t ? $" · {t}" : "") + (b.Saver ? " · Battery saver on" : ""), 12, FontWeights.Normal, Palette.Secondary, trim: true));
         if (b.HealthPercent is { } health) words.Children.Add(Text($"Battery health {health}% of its original capacity", 11, FontWeights.Normal, Palette.Tertiary, trim: true));
@@ -521,11 +623,29 @@ sealed partial class IslandSurface
 
     void AddLine(Activity other)
     {
-        var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        var row = new Grid { ColumnSpacing = 10 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
         line.Children.Add(new TextBlock { Text = other.Glyph, FontFamily = Icons, FontSize = 14, Foreground = Brush(Palette.Colour(other.Accent, Palette.Secondary)), VerticalAlignment = VerticalAlignment.Center });
-        line.Children.Add(Text(other.Title + (other.Detail is { } d ? $"  {d}" : ""), 13, FontWeights.Normal, Palette.Secondary));
-        AutomationProperties.SetName(line, other.Narration);
-        _panelContent.Children.Add(line);
+        line.Children.Add(Text(other.Title + (other.Detail is { } d ? $"  ·  {d}" : ""), 13, FontWeights.Normal, other.Mark != null ? Palette.Primary : Palette.Secondary));
+        if (other.Mark == Sense.Call && _recordingSince != null)
+        {
+            // A recording shows how long it has been running (F116).
+            _recording = Text("", 13, FontWeights.SemiBold, Palette.Recording);
+            Typography.SetNumeralAlignment(_recording, FontNumeralAlignment.Tabular);
+            line.Children.Add(_recording);
+        }
+        row.Children.Add(line);
+        if (other.Actions is { } actions)
+        {
+            var button = ActionButton(actions.Label, false, actions.Command);
+            button.Height = 28;
+            Grid.SetColumn(button, 1);
+            row.Children.Add(button);
+        }
+        AutomationProperties.SetName(row, other.Narration);
+        _panelContent.Children.Add(row);
     }
 
     /// <summary>Connected Bluetooth devices with their battery, as chips (F45, F46 sub-feature).</summary>
@@ -612,6 +732,13 @@ sealed partial class IslandSurface
 
     static SolidColorBrush Brush(Windows.UI.Color colour) => new(colour);
 
+    /// <summary>Narrator hears a new mark assertively, even when it shows only as the dot or the satellite (F116).</summary>
+    public void AnnounceMark(Activity mark)
+    {
+        var peer = FrameworkElementAutomationPeer.FromElement(_satellite) ?? FrameworkElementAutomationPeer.CreatePeerForElement(_satellite);
+        peer?.RaiseNotificationEvent(AutomationNotificationKind.Other, AutomationNotificationProcessing.ImportantMostRecent, mark.Narration, mark.Key);
+    }
+
     /// <summary>Narrator hears ambient changes politely and things that need you assertively (MOTION.md 11).</summary>
     static void Announce(UIElement element, Activity activity)
     {
@@ -629,15 +756,34 @@ sealed partial class IslandSurface
         readonly Border _art;
         readonly TextBlock _glyph, _label, _detail, _percent;
         readonly Equaliser _equaliser;
+        readonly LevelMeter _meter;
         readonly BatteryGauge _gauge;
-        readonly StackPanel _battery;
+        readonly StackPanel _battery, _actions;
+        readonly Action<string> _command;
         readonly Part _leadPart, _labelPart, _trailPart;
         public string? Key { get; private set; }
         public bool Visible => _labelPart.Shown;
 
-        public CapsuleRow(IslandWindow win)
+        /// <summary>The capsule's values that have a place in the panel too (F4).</summary>
+        public FrameworkElement DetailElement => _detail;
+        public FrameworkElement LabelElement => _label;
+        public FrameworkElement GaugeElement => _gauge.Root;
+        public FrameworkElement PercentElement => _percent;
+
+        /// <summary>
+        /// The panel's copies have taken off: the capsule's copies vanish on this frame, so a shared
+        /// element is never on screen twice (F4). The next fill shows them again.
+        /// </summary>
+        public void HideShared()
+        {
+            foreach (var element in new UIElement[] { _art, _glyph, _detail, _gauge.Root, _percent }) element.Opacity = 0;
+            _labelPart.Vanish();   // the label's opacity belongs to its part
+        }
+
+        public CapsuleRow(IslandWindow win, Action<string> command)
         {
             var c = win.Compositor;
+            _command = command;
             _art = Art.Frame(22, 6);
             _glyph = new TextBlock { FontFamily = Icons, FontSize = 16, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
             _leading = new Grid { Width = CapsuleLayout.LeadingSlot, Height = CapsuleLayout.LeadingSlot, VerticalAlignment = VerticalAlignment.Center };
@@ -645,7 +791,7 @@ sealed partial class IslandSurface
             _leading.Children.Add(_glyph);
             _leading.CenterPoint = new Vector3(12, 12, 0);
 
-            _label = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+            _label = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left };
             _detail = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
             Typography.SetNumeralAlignment(_detail, FontNumeralAlignment.Tabular);
             _equaliser = new Equaliser(c);
@@ -655,10 +801,14 @@ sealed partial class IslandSurface
             _battery = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             _battery.Children.Add(_gauge.Root);
             _battery.Children.Add(_percent);
+            _meter = new LevelMeter(c);
+            _actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
             _trailing = new Grid { VerticalAlignment = VerticalAlignment.Center };
             _trailing.Children.Add(_detail);
             _trailing.Children.Add(_equaliser.Root);
+            _trailing.Children.Add(_meter.Root);
             _trailing.Children.Add(_battery);
+            _trailing.Children.Add(_actions);
 
             Root = new Grid
             {
@@ -684,6 +834,7 @@ sealed partial class IslandSurface
         {
             var a = content.Activity;
             Key = content.Key;
+            foreach (var element in new UIElement[] { _art, _glyph, _detail, _gauge.Root, _percent }) element.Opacity = 1;
             bool art = content.Music?.ArtSmall != null;
             Art.Fill(_art, content.Music?.ArtSmall);
             _art.Visibility = art ? Visibility.Visible : Visibility.Collapsed;
@@ -693,8 +844,24 @@ sealed partial class IslandSurface
             _label.Text = a.Title;
             _label.Foreground = Brush(Palette.Primary);
 
-            _detail.Visibility = _equaliser.Root.Visibility = _battery.Visibility = Visibility.Collapsed;
-            if (content.Music is { } music)
+            _detail.Visibility = _equaliser.Root.Visibility = _battery.Visibility = _meter.Root.Visibility = _actions.Visibility = Visibility.Collapsed;
+            Root.IsHitTestVisible = false;
+            if (content.Meter)
+            {
+                _meter.Root.Visibility = Visibility.Visible;
+                _meter.SetColour(Palette.Colour(a.Accent, Palette.Primary));
+                if (!refresh) _meter.Set(0);
+            }
+            else if (a.Actions is { } actions)
+            {
+                // Buttons right in the capsule, so a question can be answered without opening anything.
+                _actions.Visibility = Visibility.Visible;
+                _actions.Children.Clear();
+                _actions.Children.Add(Pill(actions.Label, true, actions.Command));
+                if (actions.SecondLabel is { } second && actions.SecondCommand is { } secondCommand) _actions.Children.Add(Pill(second, false, secondCommand));
+                Root.IsHitTestVisible = true;   // only the buttons take the press; elsewhere it opens the panel as usual
+            }
+            else if (content.Music is { } music)
             {
                 _equaliser.Root.Visibility = Visibility.Visible;
                 _equaliser.SetColour(music.ColoursOn ? Colours.Of(music.Colours.Highlight) : Palette.Primary);
@@ -726,6 +893,22 @@ sealed partial class IslandSurface
         /// The layered entrance. Lead: the art or glyph pops in (a small element, so a little overshoot).
         /// Support: the title settles from 5 DIPs below, 40 ms later. Decoration: the trailing value only fades.
         /// </summary>
+        Button Pill(string label, bool primary, string command)
+        {
+            var button = new Button
+            {
+                Content = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold,
+                                          Foreground = Brush(primary ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Palette.Primary) },
+                Height = 24, MinWidth = 0, CornerRadius = new CornerRadius(12), Padding = new Thickness(12, 0, 12, 0), BorderThickness = new Thickness(0),
+                Background = Brush(primary ? Palette.Primary : Windows.UI.Color.FromArgb(46, 255, 255, 255)),
+            };
+            AutomationProperties.SetName(button, label);
+            button.Click += (_, _) => _command(command);
+            return button;
+        }
+
+        public void SetLevel(double level) { if (_meter.Root.Visibility == Visibility.Visible && Visible) _meter.Set(level); }
+
         public void Enter(int delayMs)
         {
             _leadPart.Enter(delayMs, fromScale: 0.55, spring: Feel.Pop);
@@ -742,6 +925,7 @@ sealed partial class IslandSurface
             _trailPart.Leave(1, toY: -2, spring: spring);
             // A hidden row must not keep the compositor drawing: the bars come to rest as they fade.
             _equaliser.SetPlaying(false);
+            Root.IsHitTestVisible = false;   // a leaving row's buttons no longer take presses
         }
 
         /// <summary>Forgets what it showed (after the warm-up), so the next content always enters fresh.</summary>

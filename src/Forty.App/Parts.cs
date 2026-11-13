@@ -114,6 +114,13 @@ sealed class Part
         _y.To(y, spring);
     }
 
+    /// <summary>Gone on this frame, with no fade: its copy elsewhere has taken over (a shared element, F4).</summary>
+    public void Vanish()
+    {
+        _version++;
+        _opacity.Set(0);
+    }
+
     /// <summary>Jumps to a pose with no motion, ready for a spring to carry it home.</summary>
     public void Place(double x, double y, double scale)
     {
@@ -126,6 +133,53 @@ sealed class Part
     {
         await Task.Delay(ms);
         action();
+    }
+}
+
+/// <summary>
+/// The microphone's level while you dictate: four bars that follow your voice. Each new level eases
+/// the bars there in 90 ms, so 20 readings a second read as one continuous movement; the middle bars
+/// reach furthest, so even a steady voice has a shape. Nothing moves between readings.
+/// </summary>
+sealed class LevelMeter
+{
+    public StackPanel Root { get; }
+    readonly Border[] _bars = new Border[4];
+    readonly Compositor _compositor;
+    static readonly float[] Reach = { 0.55f, 1.0f, 0.8f, 0.45f };
+
+    public LevelMeter(Compositor compositor)
+    {
+        _compositor = compositor;
+        Root = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2.5, Height = 16, VerticalAlignment = VerticalAlignment.Center };
+        for (int i = 0; i < _bars.Length; i++)
+        {
+            _bars[i] = new Border { Width = 3, Height = 16, CornerRadius = new CornerRadius(1.5), VerticalAlignment = VerticalAlignment.Center };
+            _bars[i].CenterPoint = new Vector3(1.5f, 8f, 0);
+            _bars[i].Scale = new Vector3(1, 0.2f, 1);
+            Root.Children.Add(_bars[i]);
+        }
+        SetColour(Palette.Primary);
+    }
+
+    public void SetColour(Windows.UI.Color colour)
+    {
+        foreach (var bar in _bars) bar.Background = new SolidColorBrush(colour);
+    }
+
+    public void Set(double level)
+    {
+        float l = (float)Math.Clamp(level, 0, 1);
+        for (int i = 0; i < _bars.Length; i++)
+        {
+            float height = 0.2f + 0.8f * l * Reach[i];
+            if (MotionPolicy.Reduced) { _bars[i].Scale = new Vector3(1, height, 1); continue; }
+            var animation = _compositor.CreateVector3KeyFrameAnimation();
+            animation.InsertKeyFrame(1f, new Vector3(1, height, 1), _compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.8f), new Vector2(0.3f, 1f)));
+            animation.Duration = TimeSpan.FromMilliseconds(90);
+            animation.Target = "Scale";
+            _bars[i].StartAnimation(animation);
+        }
     }
 }
 
@@ -160,44 +214,61 @@ sealed class Equaliser
         foreach (var bar in _bars) bar.Background = new SolidColorBrush(colour);
     }
 
-    /// <summary>Starts or stops the bars. Each bar has its own rhythm, so together they never look like a metronome.</summary>
+    static readonly float[][] Shapes =
+    {
+        new[] { 0.35f, 0.9f, 0.5f, 1.0f, 0.4f },
+        new[] { 0.8f, 0.4f, 1.0f, 0.55f, 0.85f },
+        new[] { 0.5f, 1.0f, 0.35f, 0.75f, 0.5f },
+        new[] { 0.9f, 0.55f, 0.8f, 0.3f, 0.9f },
+    };
+    static readonly double[] Periods = { 0.94, 1.18, 0.82, 1.06 };
+    static readonly float[] Rest = { 0.3f, 0.5f, 0.38f, 0.26f };
+    CompositionPropertySet? _levels;   // one height per bar; each bar's scale is bound to it once
+    Action<double>? _tick;
+
+    /// <summary>
+    /// Starts or stops the bars. Each bar has its own rhythm, so together they never look like a
+    /// metronome. Their heights are stepped by the ambient clock (see <see cref="Ambient"/>) as
+    /// compositor values, so neither XAML nor a never-ending animation runs while music plays.
+    /// </summary>
     public void SetPlaying(bool playing)
     {
+        playing &= Ambient.Allowed;
         if (playing == _playing) return;
         _playing = playing;
         if (!playing || MotionPolicy.Reduced) { Settle(); return; }
-        float[][] shapes =
-        {
-            new[] { 0.35f, 0.9f, 0.5f, 1.0f, 0.4f },
-            new[] { 0.8f, 0.4f, 1.0f, 0.55f, 0.85f },
-            new[] { 0.5f, 1.0f, 0.35f, 0.75f, 0.5f },
-            new[] { 0.9f, 0.55f, 0.8f, 0.3f, 0.9f },
-        };
-        double[] periods = { 0.94, 1.18, 0.82, 1.06 };
-        var ease = _compositor.CreateCubicBezierEasingFunction(new Vector2(0.45f, 0f), new Vector2(0.55f, 1f));
+        Bind();
+        for (int i = 0; i < _bars.Length; i++) _levels!.StopAnimation($"b{i}");   // a settle still in flight gives way
+        _tick = now => { for (int i = 0; i < _bars.Length; i++) _levels!.InsertScalar($"b{i}", (float)Ambient.Loop(Shapes[i], Periods[i], now)); };
+        Ambient.Add(_tick);
+    }
+
+    void Bind()
+    {
+        if (_levels != null) return;
+        _levels = _compositor.CreatePropertySet();
         for (int i = 0; i < _bars.Length; i++)
         {
-            var animation = _compositor.CreateVector3KeyFrameAnimation();
-            var keys = shapes[i];
-            for (int k = 0; k < keys.Length; k++)
-                animation.InsertKeyFrame(k / (float)(keys.Length - 1), new Vector3(1, keys[k], 1), ease);
-            animation.Duration = TimeSpan.FromSeconds(periods[i]);
-            animation.IterationBehavior = AnimationIterationBehavior.Forever;
-            animation.Target = "Scale";
-            _bars[i].StartAnimation(animation);
+            _levels.InsertScalar($"b{i}", Rest[i]);
+            var scale = _compositor.CreateExpressionAnimation($"Vector3(1, l.b{i}, 1)");
+            scale.SetReferenceParameter("l", _levels);
+            scale.Target = "Scale";
+            _bars[i].StartAnimation(scale);
         }
     }
 
+    /// <summary>The bars come to rest in 260 ms: each height eases there on the compositor, once.</summary>
     void Settle()
     {
-        float[] rest = { 0.3f, 0.5f, 0.38f, 0.26f };
+        if (_tick != null) { Ambient.Remove(_tick); _tick = null; }
+        Bind();
         for (int i = 0; i < _bars.Length; i++)
         {
-            var animation = _compositor.CreateVector3KeyFrameAnimation();
-            animation.InsertKeyFrame(1f, new Vector3(1, rest[i], 1));
-            animation.Duration = TimeSpan.FromMilliseconds(MotionPolicy.Reduced ? 1 : 260);
-            animation.Target = "Scale";
-            _bars[i].StartAnimation(animation);
+            if (MotionPolicy.Reduced) { _levels!.InsertScalar($"b{i}", Rest[i]); continue; }
+            var animation = _compositor.CreateScalarKeyFrameAnimation();
+            animation.InsertKeyFrame(1f, Rest[i]);
+            animation.Duration = TimeSpan.FromMilliseconds(260);
+            _levels!.StartAnimation($"b{i}", animation);
         }
     }
 }

@@ -321,6 +321,40 @@ A loop also stops whenever the element that holds it hides, including fades to z
 
 **What deliberately doesn't move**: the glows on entrance (fade only), the panel's rows (no stagger), the words of a lyric line (no per-word stagger), the equaliser's position (it only fades in).
 
+**Ambient motion is stepped, not animated (measured 13 November).** WinUI's in-app compositor costs about 2 ms of CPU for every frame it draws here, whatever the frame holds. A never-ending compositor animation therefore costs about 12% of a core at 60 Hz, even if it is four equaliser bars. The equaliser and the fluid colours are stepped 30 times a second through compositor values only (a property set the visuals are bound to), at about 6% of a core. Two rules follow:
+- **Never step through XAML properties.** Each step wakes XAML's render pass, and at 24 Hz that cost more than the 60 Hz animation it replaced.
+- **Everything that responds to you keeps running on the compositor at the display's rate:** morphs, presses, travel and the bridge. Only the slow loops that never end are stepped.
+
+**Springs rest.** A spring that has settled stops its expressions and holds its value directly; the next move wakes it on the same frame.
+
+## 14b. Fifth slice (13 November)
+
+**The liquid bridge (F5).** The satellite leaves from inside the capsule's right end on `lively` (0.86, 0.42). Until it is 80% of the way out, the two are one liquid shape:
+- **The neck:** the metaball join of the capsule's rounded end and the satellite's circle, in the body's own fill.
+- **When it snaps:** once the gap is 70% crossed, so the satellite rests as a separate drop.
+- **How it's drawn:** precomputed for 25 points of the journey and played by one path animation whose progress is bound to the satellite's spring. It cannot fall behind the drop or overshoot differently.
+- **During the join:** the hairline steps back (it would draw a seam across the neck). The satellite's own edge appears from 80% out, and its glyph or cover fades in from 60%.
+- **Leaving:** the reverse on `quick`. The drop shrinks as it is drawn back in and absorbed.
+
+| Element | Role | Starts | Motion |
+| --- | --- | --- | --- |
+| Satellite drop | Lead | 0 ms | out of the capsule's end, `lively` |
+| Neck | Carry | with the drop | bound to the drop's position |
+| Satellite content | Support | at 60% of the journey | fade |
+| Hairline | Static | — | steps back while joined |
+
+**Shared elements (F4).** On opening the panel, every element the capsule and the panel share travels, on `move` like the body:
+- the cover or glyph;
+- the label, which becomes the title;
+- the value, which becomes the header's value;
+- for battery, the gauge and the percentage.
+
+Each starts where it was in the capsule, at its capsule size, read from the laid-out panel, so nothing is guessed. The capsule's copies vanish at 70 ms, the moment the panel's copies start in, so each element is on screen once. Nothing travels back from settings, or out of lyrics (no capsule is showing then).
+
+**Marks (F116).** A mark is red (`recording`, the error red; the highlight colour in a contrast theme). It arrives with the satellite's bridge when something else holds the capsule, as the dot at rest, or as the capsule's leading glyph while you dictate. The listening meter is four bars that ease to each new level in 90 ms: 20 readings a second read as one movement. It is stepped by the speech process's own reports, so it costs nothing when nobody speaks.
+
+**Moving between displays (F8).** The body shrinks to the sliver on `quick` and the window fades in 160 ms. On the new display it fades in in 120 ms and grows from the sliver on `move`. It never slides across the gap between screens.
+
 ## 14. Never
 
 - Take keyboard focus because the pointer passed over the island.

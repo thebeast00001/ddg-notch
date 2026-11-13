@@ -243,6 +243,7 @@ sealed class CallWatcher
     readonly AutoResetEvent _wake = new(false);
     volatile string? _answer;
     volatile string? _lastNotes;   // the file "Open" on the island opens
+    volatile string? _stateLine;   // what to tell an island that asks "state?"
 
     /// <param name="notesModel">Finds the language model that writes the summary, or null for a transcript only. Asked when a call ends, so a model started later is still found.</param>
     public CallWatcher(IslandLink link, Func<CallEngines> engines, Func<ChatModel?> notesModel, string outDir, string? appFilter, bool useMicrophone, bool once)
@@ -258,6 +259,7 @@ sealed class CallWatcher
         {
             if (line is "accept" or "decline" or "stop") { _answer = line; _wake.Set(); }
             else if (line == "open-notes") OpenLastNotes();
+            else if (line == "state?" && _stateLine is { } state) _link.Send(state);
         };
     }
 
@@ -292,14 +294,15 @@ sealed class CallWatcher
     {
         var state = State.Idle;
         AudioSession? current = null;
-        WasapiCapture? others = null, mine = null;
+        WasapiCapture? others = null;
+        FollowingMicrophone? mine = null;
         long from = 0;
         int seen = 0, gone = 0;
         string label = "";
 
         while (!cancel.IsCancellationRequested)
         {
-            _wake.WaitOne(1000);   // look once a second, or at once when the island answers
+            _wake.WaitOne(_link.Saver ? 2000 : 1000);   // look once a second (every two in battery saver), or at once when the island answers
             string? answer = _answer;
             _answer = null;
             AudioSession? call;
@@ -315,6 +318,7 @@ sealed class CallWatcher
                         current = call;
                         label = CallTranscript.AppLabel(call.App);
                         _link.Send("call-offer " + label);
+                        _stateLine = "call-offer " + label;
                         Console.WriteLine($"  call noticed on {label}; asked whether to take notes");
                         state = State.Offered;
                         gone = 0;
@@ -328,10 +332,11 @@ sealed class CallWatcher
                         {
                             from = WasapiCapture.Now;
                             others = WasapiCapture.ForProcess((call ?? current).ProcessId, label);
-                            mine = _useMicrophone ? WasapiCapture.ForMicrophone() : null;
+                            mine = _useMicrophone ? new FollowingMicrophone() : null;
                             others.Start();
                             mine?.Start();
                             _link.Send("recording " + label);
+                            _stateLine = "recording " + label;
                             Console.WriteLine($"  taking notes on {label}{(_useMicrophone ? "" : " (their side only)")}");
                             state = State.Recording;
                             gone = 0;
@@ -346,6 +351,7 @@ sealed class CallWatcher
                     }
                     else if (answer == "decline")
                     {
+                        _stateLine = null;
                         Console.WriteLine("  not now: nothing recorded");
                         state = State.Declined;
                         gone = 0;
@@ -353,6 +359,7 @@ sealed class CallWatcher
                     else if (call == null && ++gone >= 2)
                     {
                         _link.Send("call-gone");
+                        _stateLine = null;
                         state = State.Idle;
                         seen = 0;
                     }
@@ -371,6 +378,7 @@ sealed class CallWatcher
                         mine?.Stop();
                         long to = WasapiCapture.Now;
                         _link.Send("call-working");
+                        _stateLine = null;
                         try
                         {
                             var theirAudio = Speech.Normalise(others.Assemble(from, to));

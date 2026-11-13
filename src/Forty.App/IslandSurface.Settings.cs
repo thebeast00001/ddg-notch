@@ -13,10 +13,21 @@ namespace Forty.App;
 sealed record SettingsModel(
     bool Lyrics, bool Colours, bool AnnounceDevices, bool OutputNotes, bool HideFromCapture, bool Glass,
     IReadOnlyList<int> Alerts, int? FullAlert, IReadOnlyList<string> HiddenApps, string? FrontProgram,
-    IReadOnlyList<(BluetoothState Device, bool Quiet)> Devices, IReadOnlyList<string> Diagnostics, string Version)
+    IReadOnlyList<(BluetoothState Device, bool Quiet)> Devices, IReadOnlyList<string> Diagnostics, string Version,
+    bool FollowDisplay = false, int Displays = 1, IReadOnlyList<string>? Keys = null, bool HelloReady = false)
 {
     /// <summary>What changes the page's structure (lists); switches and chips update themselves in place.</summary>
-    public string Structure => string.Join("|", HiddenApps) + "#" + FrontProgram + "#" + string.Join("|", Devices.Select(d => d.Device.Id));
+    public string Structure => string.Join("|", HiddenApps) + "#" + FrontProgram + "#" + string.Join("|", Devices.Select(d => d.Device.Id)) +
+                               "#" + Displays + "#" + string.Join("|", Keys ?? Array.Empty<string>()) + "#" + HelloReady;
+
+    /// <summary>A stored key's name in words: which service it is for. The value itself is never shown.</summary>
+    public static string KeyLabel(string name) => name switch
+    {
+        "SARVAM_API_KEY" => "Sarvam",
+        "ELEVENLABS_API_KEY" => "ElevenLabs",
+        "FORTY_LLM_KEY" => "Notes model",
+        _ => name,
+    };
 }
 
 /// <summary>
@@ -94,13 +105,42 @@ sealed partial class IslandSurface
         if (apps.Children.Count == 0) apps.Children.Add(Text("Bring an app to the front, then add it here.", 12, FontWeights.Normal, Palette.Tertiary));
         sections.Children.Add(Section("Screen",
             SwitchRow("Hide from screen sharing", "You still see the island; people watching your screen don't.", model.HideFromCapture, "toggle:hide-from-capture"),
+            SwitchRow("Follow the display you're using",
+                model.Displays > 1 ? "The island moves to the screen with the window you're working in."
+                                   : "One display is connected now; this applies when you add another.",
+                model.FollowDisplay, "toggle:follow-display"),
             Labelled("Hide the island in front of", apps)));
+
+        // Service keys (F121): names only, never values; removing one asks for Windows Hello.
+        var keys = new StackPanel { Spacing = 6 };
+        foreach (string name in model.Keys ?? Array.Empty<string>())
+        {
+            var line = new Grid();
+            line.Children.Add(Text(SettingsModel.KeyLabel(name), 13, FontWeights.Normal, Palette.Primary));
+            var remove = Chip("Remove", false, $"remove-key:{name}");
+            remove.HorizontalAlignment = HorizontalAlignment.Right;
+            AutomationProperties.SetName(remove, $"Remove the {SettingsModel.KeyLabel(name)} key from this PC");
+            line.Children.Add(remove);
+            keys.Children.Add(line);
+        }
+        if (keys.Children.Count == 0) keys.Children.Add(Text("No keys are stored. spikes\\setup-keys.cmd adds them.", 12, FontWeights.Normal, Palette.Tertiary));
+        var note = Text(model.HelloReady ? "Encrypted for your Windows account on this PC. Removing one asks for Windows Hello."
+                                         : "Encrypted for your Windows account on this PC. Windows Hello isn't set up, so removing one doesn't ask.",
+                        12, FontWeights.Normal, Palette.Tertiary);
+        note.TextWrapping = TextWrapping.Wrap;
+        keys.Children.Add(note);
+        sections.Children.Add(Section("Service keys", keys));
 
         sections.Children.Add(Section("Look",
             SwitchRow("Glass (experiment)", "Windows' acrylic inside the island. It does not blur yet; Ink is used meanwhile.", model.Glass, "toggle:glass")));
 
         var diagnostics = new StackPanel { Spacing = 3 };
-        foreach (string line in model.Diagnostics) diagnostics.Children.Add(Text(line, 12, FontWeights.Normal, Palette.Secondary));
+        foreach (string line in model.Diagnostics)
+        {
+            var text = Text(line, 12, FontWeights.Normal, Palette.Secondary);
+            text.TextWrapping = TextWrapping.Wrap;
+            diagnostics.Children.Add(text);
+        }
         diagnostics.Children.Add(Chip("Open the diagnostics folder", false, "open-diagnostics"));
         sections.Children.Add(Section("Diagnostics", diagnostics));
 

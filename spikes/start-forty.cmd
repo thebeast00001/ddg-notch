@@ -17,18 +17,29 @@ rem                       Silence is cut out first. ElevenLabs keeps the audio i
 rem                       the standby engine writes the transcript, without telling voices apart.
 rem   Call summary        Sarvam's chat model, from the transcript text.
 rem
-rem Dictation: hold Right Ctrl in any app, speak, let go. The island shows listening, working and done.
-rem Call notes: when a call starts, the island asks "Take notes?". Nothing is recorded or sent before
-rem   you press Yes. The island then shows a recording capsule with Stop. Notes are saved in the out
-rem   folder, and the island shows "Notes ready" with an Open button for a few seconds.
+rem Dictation: hold Right Ctrl in any app, speak, let go. The island shows Listening with your voice's
+rem   level, then "Writing it down", then "Typed".
+rem Call notes: when a call starts, the island asks "Take call notes?" with Yes and Not now. Nothing is
+rem   recorded or sent before you press Yes. While notes are taken a red dot stays on the island (the
+rem   satellite beside anything else); open the island for the time and Stop. Notes are saved in the out
+rem   folder, and the island shows "Notes ready" with Open for 30 seconds.
 rem   Tell the people on the call that you are taking notes.
-rem Quit: Ctrl+C in this window, then right-click the island to close it.
+rem   In battery saver the island tells the speech process, which then lets its model go after a minute
+rem   unused and looks for calls half as often.
+rem Quit: Ctrl+C in this window, then Quit in the island's panel.
+rem   set FORTY_OLD_ISLAND=1  uses the spike island instead of the phase 1 island
 chcp 65001 >nul
 set DOTNET_ROOT=%USERPROFILE%\tools\dotnet10
 set FORTY_SPIKE=run
 set FORTY_ENGINE=c
 set FORTY_OUT=%~dp0out
-start "" "%~dp0IslandSpike\bin\Release\net10.0-windows10.0.26100.0\win-x64\IslandSpike.exe"
+if "%FORTY_OLD_ISLAND%"=="1" (
+  start "" "%~dp0IslandSpike\bin\Release\net10.0-windows10.0.26100.0\win-x64\IslandSpike.exe"
+) else (
+  set FORTY_OUT=
+  start "" "%~dp0..\src\Forty.App\bin\Release\net10.0-windows10.0.26100.0\win-x64\Forty.exe"
+  set FORTY_OUT=%~dp0out
+)
 timeout /t 2 /nobreak >nul
 "%~dp0SpeechSpike\bin\Release\net10.0\win-x64\SpeechSpike.exe" dictate --calls --cloud %*
 pause

@@ -38,6 +38,7 @@ sealed partial class App : Application
           "audio-output": "on",
           "bluetooth": "on",
           "diagnostics": "you",
+          "follow-display": "off",
           "glass": "off",
           "hide-from-capture": "off",
           "lyrics": "off",
@@ -49,7 +50,8 @@ sealed partial class App : Application
     {
         string? log = Environment.GetEnvironmentVariable("FORTY_OUT");
         string diagnostics = Path.Combine(Home, "diagnostics");
-        bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1";
+        bool hold = Environment.GetEnvironmentVariable("FORTY_DEMO") == "hold";
+        bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1" || hold;
 
         // Crash reports carry no personal data (F148) and stay on this PC.
         void Crash(Exception error, string where)
@@ -69,7 +71,9 @@ sealed partial class App : Application
             if (!File.Exists(flagsFile)) File.WriteAllText(flagsFile, DefaultFlags);
             var flags = new FeatureFlags(flagsFile, developer: Environment.GetEnvironmentVariable("FORTY_CHANNEL") != "public");
 
-            var window = new IslandWindow(WindowWidth, WindowHeight);
+            // FORTY_WINDOW_HEIGHT is for measuring only (what the window's size costs per frame).
+            double height = double.TryParse(Environment.GetEnvironmentVariable("FORTY_WINDOW_HEIGHT"), out double h) ? h : WindowHeight;
+            var window = new IslandWindow(WindowWidth, height);
             var meter = new Meter(flags.IsOn("diagnostics") && !demo ? diagnostics : null);
             var settings = new Settings(Path.Combine(Home, "settings.json"));
             _controller = new IslandController(window, flags, settings, meter);
@@ -80,7 +84,8 @@ sealed partial class App : Application
             meter.Record("start.ms", startMs);
             Log(log, $"visible {startMs:0} ms after the process started; adapters: " +
                      string.Join(", ", _controller.Adapters.Select(a => $"{a.Name} {a.Status.Availability}")));
-            if (demo) await Demo.RunAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-demo"));
+            if (hold) await Demo.HoldAsync(_controller);
+            else if (demo) await Demo.RunAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-demo"));
         }
         catch (Exception ex)
         {

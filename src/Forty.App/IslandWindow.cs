@@ -61,11 +61,12 @@ sealed class IslandWindow : IDisposable
     public Canvas BodyHost { get; }
     public Grid Overlay { get; }
     public IntPtr Hwnd { get; }
-    public IntPtr MonitorHandle { get; }
-    public ulong DisplayIdValue { get; }
-    public double Scale { get; }
-    public RectInt32 MonitorPx { get; }
-    public RectInt32 WindowPx { get; }
+    public IntPtr MonitorHandle { get; private set; }
+    public ulong DisplayIdValue { get; private set; }
+    public double Scale { get; private set; }
+    public RectInt32 MonitorPx { get; private set; }
+    public RectInt32 WindowPx { get; private set; }
+    readonly double _widthDip, _heightDip;
     public double WidthDip => WindowPx.Width / Scale;
     public double HeightDip => WindowPx.Height / Scale;
     public double TopInsetDip => TopInsetPx / Scale;
@@ -107,17 +108,9 @@ sealed class IslandWindow : IDisposable
         int noBorder = unchecked((int)0xFFFFFFFE);
         Native.DwmSetWindowAttribute(Hwnd, Native.DWMWA_BORDER_COLOR, ref noBorder, sizeof(int));
 
-        var area = DisplayArea.Primary;
-        MonitorPx = area.OuterBounds;
-        DisplayIdValue = area.DisplayId.Value;
-        MonitorHandle = Win32Interop.GetMonitorFromDisplayId(area.DisplayId);
-        Native.GetDpiForMonitor(MonitorHandle, 0, out uint dpi, out _);
-        Scale = dpi / 96.0;
-
-        int w = (int)Math.Ceiling(widthDip * Scale), h = (int)Math.Ceiling(heightDip * Scale) + TopInsetPx;
-        if ((MonitorPx.Width - w) % 2 != 0) w++;   // keep the centre on a whole pixel
-        WindowPx = new RectInt32(MonitorPx.X + (MonitorPx.Width - w) / 2, MonitorPx.Y - TopInsetPx, w, h);
-        Window.AppWindow.MoveAndResize(WindowPx);
+        _widthDip = widthDip;
+        _heightDip = heightDip;
+        Place(DisplayArea.Primary);
         Native.SetWindowPos(Hwnd, IntPtr.Zero, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_FRAMECHANGED);
 
         _subclass = WindowMessage;
@@ -125,6 +118,35 @@ sealed class IslandWindow : IDisposable
 
         // Always-on-top is asked for last, after every style is in place, and then read back.
         EnsureTopmost();
+    }
+
+    /// <summary>
+    /// Puts the island at the top centre of a display, at that display's scaling, below a taskbar
+    /// docked at the top (F7). Called at start, when displays change, and when it follows you (F8).
+    /// </summary>
+    public void Place(DisplayArea area)
+    {
+        MonitorPx = area.OuterBounds;
+        DisplayIdValue = area.DisplayId.Value;
+        MonitorHandle = Win32Interop.GetMonitorFromDisplayId(area.DisplayId);
+        Native.GetDpiForMonitor(MonitorHandle, 0, out uint dpi, out _);
+        Scale = dpi / 96.0;
+        int top = Forty.Core.DisplayRules.TopEdge(MonitorPx.Y, area.WorkArea.Y);
+
+        int w = (int)Math.Ceiling(_widthDip * Scale), h = (int)Math.Ceiling(_heightDip * Scale) + TopInsetPx;
+        if ((MonitorPx.Width - w) % 2 != 0) w++;   // keep the centre on a whole pixel
+        WindowPx = new RectInt32(MonitorPx.X + (MonitorPx.Width - w) / 2, top - TopInsetPx, w, h);
+        Window.AppWindow.MoveAndResize(WindowPx);
+    }
+
+    /// <summary>The display a window is on, or null.</summary>
+    public static DisplayArea? DisplayOf(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return null;
+        IntPtr monitor = Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONULL);
+        if (monitor == IntPtr.Zero) return null;
+        try { return DisplayArea.GetFromDisplayId(Win32Interop.GetDisplayIdFromMonitor(monitor)); }
+        catch (ArgumentException) { return null; }
     }
 
     /// <summary>
@@ -142,6 +164,7 @@ sealed class IslandWindow : IDisposable
     {
         if (msg == Native.WM_HOTKEY && wParam.ToInt32() == HotkeyId) Hotkey?.Invoke();
         else if (msg is Native.WM_DISPLAYCHANGE or Native.WM_DPICHANGED) DisplaysChanged?.Invoke();
+        else if (msg == Native.WM_SETTINGCHANGE && wParam.ToInt64() == Native.SPI_SETWORKAREA) DisplaysChanged?.Invoke();   // a taskbar moved
         else if (msg is Native.WM_SETTINGCHANGE or Native.WM_THEMECHANGED or Native.WM_SYSCOLORCHANGE) SettingsChanged?.Invoke();
         return Native.DefSubclassProc(hWnd, msg, wParam, lParam);
     }

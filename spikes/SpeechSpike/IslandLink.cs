@@ -13,12 +13,22 @@ sealed class IslandLink : IDisposable
     const string PipeName = "forty-island";
 
     readonly object _gate = new();
+    readonly Timer _finder;
     NamedPipeClientStream? _pipe;
     StreamWriter? _writer;
     long _nextAttempt;
 
-    /// <summary>A line from the island: "accept", "decline" or "stop". Raised on a background thread.</summary>
+    /// <summary>
+    /// A line from the island: "accept", "decline", "stop", "open-notes", "state?" or "policy saver|full".
+    /// Raised on a background thread.
+    /// </summary>
     public event Action<string>? Received;
+
+    /// <summary>True while the island says the PC is in battery saver (F128): do less.</summary>
+    public bool Saver { get; private set; }
+
+    /// <summary>Looks for the island every few seconds, so one started later still hears what is going on.</summary>
+    public IslandLink() => _finder = new Timer(_ => { if (!Connected) Send("hello"); }, null, 3000, 3000);
 
     public bool Connected { get { lock (_gate) return _writer != null; } }
 
@@ -51,7 +61,11 @@ sealed class IslandLink : IDisposable
         try
         {
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
-            while (reader.ReadLine() is { } line) Received?.Invoke(line);
+            while (reader.ReadLine() is { } line)
+            {
+                if (line.StartsWith("policy ", StringComparison.Ordinal)) Saver = line == "policy saver";
+                Received?.Invoke(line);
+            }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
         lock (_gate) { if (_pipe == pipe) Drop(); }
@@ -78,6 +92,7 @@ sealed class IslandLink : IDisposable
 
     public void Dispose()
     {
+        _finder.Dispose();
         lock (_gate) Drop();
     }
 }

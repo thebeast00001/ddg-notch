@@ -24,7 +24,7 @@ static class Demo
     public static async Task RunAsync(IslandWindow win, IslandController island, string outDir)
     {
         Directory.CreateDirectory(outDir);
-        var watchdog = new Timer(_ => Environment.Exit(3), null, 180_000, Timeout.Infinite);
+        var watchdog = new Timer(_ => Environment.Exit(3), null, 240_000, Timeout.Infinite);
         var rect = new RectInt32(win.WindowPx.X - win.MonitorPx.X, 0, win.WindowPx.Width, (int)(380 * win.Scale));
         var strip = new RectInt32(win.WindowPx.X - win.MonitorPx.X + (int)(60 * win.Scale), 0, (int)((App.WindowWidth - 120) * win.Scale), (int)(78 * win.Scale));
         var tall = rect with { Height = (int)(App.WindowHeight * win.Scale) };   // the whole settings page
@@ -75,6 +75,9 @@ static class Demo
         await Film("panel-open", island.DemoExpand, 700, rect);
         await Still("panel-music", 300);
 
+        // A made-up key in the demo's own folder, so the settings page has a key to list (F121).
+        new SecretStore(Path.Combine(App.Home, "keys.bin")).Set("SARVAM_API_KEY", "made-up-demo-value");
+
         // Settings: the panel grows into the full page; switches answer on the press.
         await Film("settings-open", () => island.DemoCommand("settings"), 760, rect);
         await Still("settings", 300, tall);
@@ -90,14 +93,25 @@ static class Demo
         island.DemoFlag("hide-from-capture", false);
         await Still("visible-again", 900);
 
+        // F7: a display change re-places the island in place (here on the same display).
+        island.DemoDisplaysChanged();
+        await Still("after-display-change", 600);
+
         // Battery: the gauge sweeps from empty to the level when charging starts.
         island.DemoPower(new PowerSnapshot(71, true, true, false, 30_000, 35_700, 50_300, 54_000));
         q.Post(Activity.Event(PowerRules.ChargingKey, "power", Priority.Ambient, "Charging", null, Glyphs.BatteryCharging(71), "Charging, 71 percent", Accent.Done), Clock.Now);
         await Film("charging", () => { }, 700);
         await Still("charging", 200);
+        // F4: the capsule's gauge and percentage travel into the battery panel.
+        await Film("battery-panel-open", island.DemoExpand, 700, rect);
+        island.DemoCollapse();
+        await Task.Delay(600);
 
         q.Post(Activity.Live("approval.git", "agent", Priority.ActNow, "Approve git push?", "main", Glyphs.Info, "Needs your approval: git push to main", Accent.NeedsYou), Clock.Now);
         await Still("approval-with-music-satellite");
+        await Film("approval-panel-open", island.DemoExpand, 700, rect);   // its glyph and "main" travel into the header
+        island.DemoCollapse();
+        await Task.Delay(600);
         var buds = new BluetoothState("demo-buds", "Galaxy Buds3 Pro", DeviceKind.Audio, false, null);
         q.Post(DeviceRules.Change(buds, buds with { Connected = true, Battery = 95 })!, Clock.Now);
         await Still("burst-waiting");
@@ -107,6 +121,60 @@ static class Demo
         q.Remove("approval.git", Clock.Now);
         q.Remove(DeviceRules.Key("demo-buds"), Clock.Now);
         q.Remove(PowerRules.ChargingKey, Clock.Now);
+        await Task.Delay(900);
+
+        // Speech (F116): dictation shows Listening with the voice's level, then writing, then typed.
+        // These lines are what the speech process sends; no microphone is opened.
+        void Marks(string at) => App.Log(outDir, $"marks at {at}: [{string.Join(", ", q.View.Marks.Select(m => m.Title))}] primary: {q.View.Primary?.Title} satellite: {q.View.Satellite?.Title} dots: {q.View.Dots.Count}; {island.DemoSpeechState}");
+        await Film("dictation", () => island.DemoSpeech("listening"), 520);
+        for (int i = 0; i < 16; i++)
+        {
+            island.DemoSpeech(FormattableString.Invariant($"level {0.3 + 0.6 * Math.Abs(Math.Sin(i * 0.9)):0.00}"));
+            await Task.Delay(50);
+        }
+        await Still("dictation-listening", 0);
+        Marks("listening");
+        island.DemoSpeech("working");
+        await Still("dictation-working", 400);
+        island.DemoSpeech("done");
+        await Still("dictation-typed", 300);
+        await Task.Delay(1800);
+
+        // Call notes: the question with its buttons; on Yes the recording mark pulls out of the music
+        // capsule as the satellite (the liquid bridge), and is drawn back in when recording stops.
+        await Film("bridge-out", () => island.DemoSpeech("recording Teams"), 760);
+        await Still("call-recording-beside-music", 300);
+        Marks("recording");
+        island.DemoExpand();
+        await Still("call-recording-panel", 1300);
+        island.DemoCollapse();
+        await Task.Delay(700);
+        await Film("bridge-in", () => island.DemoSpeech("capture-stopped"), 600);
+        await Task.Delay(500);
+        island.DemoSpeech("call-offer Teams");
+        await Still("call-offer", 600);
+        island.DemoCommand("call-decline");
+        await Task.Delay(500);
+        island.DemoSpeech("call-done 2 to-dos");
+        await Still("call-notes-ready", 600);
+        q.Remove(SpeechSession.CallKey, Clock.Now);
+        await Task.Delay(700);
+
+        // The real pipe: a stand-in for the speech process (a hidden PowerShell) connects, reports a
+        // recording, drops the connection while still running, then exits. The mark must stay until it has exited.
+        if (island.DemoStartSpeech())
+        {
+            using var standIn = StandIn();
+            await Task.Delay(2600);
+            await Still("pipe-recording", 0);
+            Marks("pipe connected");
+            await Task.Delay(2600);
+            await Still("pipe-dropped-still-running", 0);
+            Marks("pipe dropped, process running");
+            await Task.Delay(3600);
+            await Still("pipe-process-exited", 0);
+            Marks("process exited");
+        }
 
         // Paused music keeps its place for a while, equaliser at rest, glows still.
         island.DemoMusic(Song("Glass Tides", "Northbound Echo", false, TimeSpan.FromSeconds(60)), ocean, Lyrics);
@@ -117,6 +185,39 @@ static class Demo
         await Task.Delay(200);
         watchdog.Dispose();
         Application.Current.Exit();
+    }
+
+    /// <summary>
+    /// FORTY_DEMO=hold: a made-up song plays with its fluid colours and nothing else happens for 45 s,
+    /// so the steady cost of music on screen can be measured from outside. Captures nothing.
+    /// </summary>
+    public static async Task HoldAsync(IslandController island)
+    {
+        byte[] ocean = await CoverAsync(new[] { (28, 92, 214), (40, 200, 190), (88, 40, 170) }, "SEA");
+        island.DemoFlag(MusicDirector.ColoursFlag, Environment.GetEnvironmentVariable("FORTY_HOLD_COLOURS") != "0");
+        island.DemoFlag(MusicDirector.LyricsFlag, false);
+        bool playing = Environment.GetEnvironmentVariable("FORTY_HOLD_PAUSED") != "1";
+        island.DemoMusic(new NowPlaying("demo.player", "Demo Player", "Glass Tides", "Northbound Echo", "Made-Up Album", playing, true, true, false, RepeatMode.Off,
+            new PlaybackClock(TimeSpan.FromSeconds(30), DateTimeOffset.Now, playing, TimeSpan.FromSeconds(214))), ocean, null);
+        await Task.Delay(10_000);
+        App.Log(Environment.GetEnvironmentVariable("FORTY_OUT"), $"springs: {CompositionSpring.Created} created, {CompositionSpring.Running} running");
+        await Task.Delay(35_000);
+        Application.Current.Exit();
+    }
+
+    /// <summary>
+    /// A stand-in speech process for the pipe check: connects, says it is recording, closes the
+    /// connection after 3 s while staying alive, and exits 3 s later. It opens no audio.
+    /// </summary>
+    static System.Diagnostics.Process? StandIn()
+    {
+        const string script =
+            "$p = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'forty-island', [System.IO.Pipes.PipeDirection]::InOut); " +
+            "$p.Connect(3000); $w = New-Object System.IO.StreamWriter($p); $w.AutoFlush = $true; " +
+            "$w.WriteLine('recording Test'); Start-Sleep -Milliseconds 3000; $p.Dispose(); Start-Sleep -Milliseconds 3000";
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
+        foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script }) start.ArgumentList.Add(arg);
+        return System.Diagnostics.Process.Start(start);
     }
 
     /// <summary>Made-up lyric lines (not from any real song), timed for the demo.</summary>

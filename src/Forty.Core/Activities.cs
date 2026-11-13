@@ -26,6 +26,9 @@ public enum Priority
 /// <param name="Narration">What Narrator says when it appears; also the run-log wording.</param>
 /// <param name="Lifetime">How long it stays once shown. Null means until it is removed (a live activity).</param>
 /// <param name="Accent">A state colour role; null means the default white content.</param>
+/// <param name="Mark">Set when this activity means something is listening, recording or watching (F116).
+/// A mark is always visible in some form, in every mode, whatever else is showing.</param>
+/// <param name="Actions">Up to two buttons the capsule and panel offer, such as Yes and Not now.</param>
 public sealed record Activity(
     string Key,
     string Source,
@@ -35,8 +38,13 @@ public sealed record Activity(
     string Glyph,
     string Narration,
     TimeSpan? Lifetime,
-    Accent Accent = Accent.None)
+    Accent Accent = Accent.None,
+    Sense? Mark = null,
+    ActivityActions? Actions = null)
 {
+    /// <summary>A mark that stays out of the capsule: it shows as the dot, or as the satellite beside something else.</summary>
+    public bool QuietMark => Mark != null && Priority >= Priority.Ambient;
+
     /// <summary>Default lifetimes when a feature does not choose one.</summary>
     public static TimeSpan? DefaultLifetime(Priority priority) => priority switch
     {
@@ -54,8 +62,17 @@ public sealed record Activity(
         new(key, source, priority, title, detail, glyph, narration, null, accent);
 }
 
-/// <summary>The reserved state colours (MOTION.md 8). Nothing else uses them.</summary>
-public enum Accent { None, Done, NeedsYou, Error }
+/// <summary>The reserved state colours (MOTION.md 8). Nothing else uses them. Recording is the red of a live microphone.</summary>
+public enum Accent { None, Done, NeedsYou, Error, Recording }
+
+/// <summary>
+/// Something that is sensing for you right now (F116), most important first. The order decides which
+/// mark shows when there is room for only one.
+/// </summary>
+public enum Sense { Call, Microphone, Screen, WakeWord }
+
+/// <summary>Buttons an activity offers. Commands are sent back to whoever posted it.</summary>
+public sealed record ActivityActions(string Label, string Command, string? SecondLabel = null, string? SecondCommand = null);
 
 /// <summary>Modes decide which priorities may show, and as what (ROADMAP.md 2.1).</summary>
 public enum Mode { Normal, Focus, Meeting, Presenting, Gaming }

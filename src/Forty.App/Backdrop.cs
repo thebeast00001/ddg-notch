@@ -100,22 +100,29 @@ sealed class Backdrop
     /// <summary>Fades in or out. It never moves on its own entrance; it is decoration, so it only fades.</summary>
     public void Show(bool show) => _opacity.To(show ? 1 : 0, show ? Forty.Motion.Springs.Move : Forty.Motion.Springs.Quick, isFade: true);
 
-    /// <summary>Starts or stops the slow drift. Stopping leaves each glow where it is.</summary>
+    /// <summary>
+    /// Starts or stops the slow drift. Stopping leaves each glow where it is. The drift is stepped by the
+    /// ambient clock (see <see cref="Ambient"/>): the glows move a few DIPs a second, so stepping them
+    /// looks the same as a compositor animation and costs a fraction of it.
+    /// </summary>
     public void Flow(bool flow)
     {
         flow &= !MotionPolicy.Reduced;
         if (flow == _flowing) return;
         _flowing = flow;
+        if (!flow) { Ambient.Remove(Step); return; }
+        Ambient.Add(Step);
+    }
+
+    static readonly (float[] X, float[] Y, double Seconds)[] Tracks =
+        Paths.Select(p => (p.Path.Select(v => v.X).ToArray(), p.Path.Select(v => v.Y).ToArray(), p.Seconds)).ToArray();
+
+    void Step(double now)
+    {
         for (int i = 0; i < 3; i++)
         {
-            if (!flow) { _drift[i].StopAnimation("p"); continue; }
-            var (path, seconds) = Paths[i];
-            var animation = _c.CreateVector2KeyFrameAnimation();
-            var ease = _c.CreateCubicBezierEasingFunction(new Vector2(0.42f, 0f), new Vector2(0.58f, 1f));
-            for (int k = 0; k < path.Length; k++) animation.InsertKeyFrame(k / (float)(path.Length - 1), path[k], ease);
-            animation.Duration = TimeSpan.FromSeconds(seconds);
-            animation.IterationBehavior = AnimationIterationBehavior.Forever;
-            _drift[i].StartAnimation("p", animation);
+            var (xs, ys, seconds) = Tracks[i];
+            _drift[i].InsertVector2("p", new Vector2((float)Ambient.Loop(xs, seconds, now), (float)Ambient.Loop(ys, seconds, now)));
         }
     }
 }
