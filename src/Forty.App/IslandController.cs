@@ -23,6 +23,7 @@ sealed class IslandController : IDisposable
     readonly DispatcherQueueTimer _dwell, _leave, _deadline;
 
     public ActivityQueue Queue { get; } = new();
+    public IslandSurface Surface => _surface;
     public PowerAdapter Power { get; } = new();
     public MediaAdapter Media { get; } = new();
     public FocusAdapter Focus { get; } = new();

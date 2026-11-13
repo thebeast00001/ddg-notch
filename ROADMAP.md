@@ -360,6 +360,14 @@ Found while measuring this slice:
 
 **Glass (F11), not built.** Both approaches left from spike S6 put the blur behind the whole window, not inside the island's shape. The window's region can follow the shape only in whole pixels, and only when a morph starts and ends, so the blur would show as a rectangle around the island during every morph. Shaping it properly means running a second copy of the body's springs inside Windows' own compositor, where a frame's lag would show glass outside the edge in fast motion. Ink stays the look.
 
+### Polish: buttons, icons, centring (13 November)
+
+You said the buttons looked cheap, lyrics sat a little high, and the red dot wasn't centred in the recording mark.
+- **Buttons.** Every button is now one `IslandButton` with its own plate: quiet, soft, filled or tinted, easing between rest, hover and pressed in 120 ms, giving way to 0.94 on press, with a keyboard focus ring. WinUI's grey hover square is gone.
+- **Icons.** Play, pause, previous and next are filled vector shapes centred on their visual weight. The recording mark is a ring and a dot drawn exactly concentric, everywhere it appears.
+- **Text.** Labels and single lyric lines are centred on their letters, from cap height to baseline, instead of on the line box.
+- **Measured.** `FORTY_DEMO=layout` measures every icon and label against its box, off screen. Everything is within one device pixel vertically. The rules are in MOTION.md 14d.
+
 ### Phase 1 checklist: built and remaining (13 November)
 
 | Feature | State | Built | Remaining |

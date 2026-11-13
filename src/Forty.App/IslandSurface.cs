@@ -59,7 +59,9 @@ sealed partial class IslandSurface
     readonly LyricRow[] _lyrics;
     int _activeRow, _activeLyric;
     readonly Grid _satellite;
-    readonly TextBlock _satelliteGlyph, _satelliteBadge;
+    readonly FontIcon _satelliteGlyph;
+    readonly FrameworkElement _satelliteRecord;
+    readonly TextBlock _satelliteBadge;
     readonly Border _satelliteArt;
     readonly Grid _panel;
     readonly StackPanel _panelContent;
@@ -96,13 +98,15 @@ sealed partial class IslandSurface
         foreach (var row in _lyrics) _layer.Children.Add(row.Root);
 
         // The satellite: a tiny cover when music waits beside something else, otherwise a glyph.
-        _satelliteGlyph = new TextBlock { FontFamily = Icons, FontSize = 15, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _satelliteGlyph = IconArt.Glyph("", 15, Palette.Primary);
+        _satelliteRecord = IconArt.Record(15, Palette.Recording);
         _satelliteArt = Art.Frame(26, 13);
         _satelliteArt.HorizontalAlignment = HorizontalAlignment.Center;
         _satelliteBadge = new TextBlock { FontFamily = TextFace, FontSize = 9, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 4, 2) };
         _satellite = new Grid { Width = Body.SatelliteSize, Height = Body.SatelliteSize, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
         _satellite.Children.Add(_satelliteArt);
         _satellite.Children.Add(_satelliteGlyph);
+        _satellite.Children.Add(_satelliteRecord);
         _satellite.Children.Add(_satelliteBadge);
         win.Overlay.Children.Add(_satellite);
         body.PinToSatellite(_satellite);
@@ -256,8 +260,10 @@ sealed partial class IslandSurface
         bool art = music?.ArtSmall != null && activity.Key == MediaAdapter.ActivityKey;
         Art.Fill(_satelliteArt, art ? music!.ArtSmall : null);
         _satelliteArt.Visibility = art ? Visibility.Visible : Visibility.Collapsed;
-        _satelliteGlyph.Visibility = art ? Visibility.Collapsed : Visibility.Visible;
-        _satelliteGlyph.Text = activity.Glyph;
+        bool record = !art && activity.Mark == Sense.Call;
+        _satelliteRecord.Visibility = record ? Visibility.Visible : Visibility.Collapsed;
+        _satelliteGlyph.Visibility = art || record ? Visibility.Collapsed : Visibility.Visible;
+        _satelliteGlyph.Glyph = activity.Glyph;
         _satelliteGlyph.Foreground = Brush(Palette.Colour(activity.Accent, Palette.Primary));
         _satelliteBadge.Text = waiting > 0 ? $"+{waiting}" : "";
         _satelliteBadge.Foreground = Brush(Palette.Secondary);
@@ -303,7 +309,7 @@ sealed partial class IslandSurface
 
         _panel.IsHitTestVisible = true;
         _panelContent.Measure(new Windows.Foundation.Size(BodyShape.Panel.Width, double.PositiveInfinity));
-        double height = Math.Clamp(Math.Ceiling(_panelContent.DesiredSize.Height), 120, 330);
+        double height = Math.Clamp(Math.Ceiling(_panelContent.DesiredSize.Height), 120, 400);   // room for the full music panel with a recording line
 
         if (fromSettings)
         {
@@ -488,18 +494,22 @@ sealed partial class IslandSurface
         var controls = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
         for (int i = 0; i < 5; i++) controls.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         void Place(FrameworkElement element, int column) { Grid.SetColumn(element, column); controls.Children.Add(element); }
-        Place(Round("", "Shuffle", 34, music.Shuffle == true, music.Shuffle != null, "shuffle", highlight), 0);
-        Place(Round(Glyphs.Previous, "Previous track", 40, false, true, "previous", highlight), 1);
-        Place(Round(music.Playing ? Glyphs.Pause : Glyphs.Play, music.Playing ? "Pause" : "Play", 52, true, true, "playpause", Palette.Primary, filledInk: true), 2);
-        Place(Round(Glyphs.Next, "Next track", 40, false, true, "next", highlight), 3);
-        Place(Round(music.Repeat == RepeatMode.Track ? "" : "", music.Repeat switch { RepeatMode.Track => "Repeat one", RepeatMode.List => "Repeat all", _ => "Repeat off" },
-                    34, music.Repeat != RepeatMode.Off, true, "repeat", highlight), 4);
+        // Filled, centred drawings for the transport; the side buttons are quieter and say "on" with a tinted plate.
+        bool shuffle = music.Shuffle == true, repeat = music.Repeat != RepeatMode.Off;
+        var dim = Windows.UI.Color.FromArgb(190, 255, 255, 255);
+        Place(Round(IconArt.Glyph("\uE8B1", 15, shuffle ? highlight : dim), "Shuffle", 36, shuffle ? ButtonLook.Tinted(highlight) : ButtonLook.Quiet, "shuffle", music.Shuffle != null), 0);
+        Place(Round(IconArt.Drawing(IconArt.Previous, 22, Palette.Primary), "Previous track", 44, ButtonLook.Quiet, "previous"), 1);
+        Place(Round(IconArt.Drawing(music.Playing ? IconArt.Pause : IconArt.Play, 26, Palette.OnPrimary), music.Playing ? "Pause" : "Play", 56, ButtonLook.Filled, "playpause"), 2);
+        Place(Round(IconArt.Drawing(IconArt.Next, 22, Palette.Primary), "Next track", 44, ButtonLook.Quiet, "next"), 3);
+        Place(Round(IconArt.Glyph(music.Repeat == RepeatMode.Track ? "\uE8ED" : "\uE8EE", 15, repeat ? highlight : dim),
+                    music.Repeat switch { RepeatMode.Track => "Repeat one", RepeatMode.List => "Repeat all", _ => "Repeat off" },
+                    36, repeat ? ButtonLook.Tinted(highlight) : ButtonLook.Quiet, "repeat"), 4);
         _panelContent.Children.Add(controls);
 
         // Sub-feature toggles, right where they apply.
         var toggles = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        toggles.Children.Add(Toggle("", "Lyrics", music.LyricsOn, "toggle:lyrics", highlight));
-        toggles.Children.Add(Toggle("", "Colours", music.ColoursOn, "toggle:music-colours", highlight));
+        toggles.Children.Add(Toggle("\uE8C1", "Lyrics", music.LyricsOn, "toggle:lyrics"));
+        toggles.Children.Add(Toggle("\uE790", "Colours", music.ColoursOn, "toggle:music-colours"));
         var togglesRow = new Grid();
         togglesRow.Children.Add(toggles);
         if (music.LyricsNote.Length > 0)
@@ -562,7 +572,7 @@ sealed partial class IslandSurface
         title.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(title, 1);
         line.Children.Add(title);
-        var play = Round(music.Playing ? Glyphs.Pause : Glyphs.Play, music.Playing ? "Pause" : "Play", 30, false, true, "playpause", Palette.Primary);
+        var play = Round(IconArt.Drawing(music.Playing ? IconArt.Pause : IconArt.Play, 16, Palette.Primary), music.Playing ? "Pause" : "Play", 32, ButtonLook.Quiet, "playpause");
         Grid.SetColumn(play, 2);
         line.Children.Add(play);
         _panelContent.Children.Add(line);
@@ -574,7 +584,7 @@ sealed partial class IslandSurface
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var glyph = new TextBlock { Text = p.Glyph, FontFamily = Icons, FontSize = 22, Foreground = Brush(Palette.Colour(p.Accent, Palette.Primary)), VerticalAlignment = VerticalAlignment.Center };
+        FrameworkElement glyph = p.Mark == Sense.Call ? IconArt.Record(22, Palette.Recording) : IconArt.Glyph(p.Glyph, 22, Palette.Colour(p.Accent, Palette.Primary));
         glyph.CenterPoint = new Vector3(0, 0, 0);
         _panelArt = new Part(glyph, _win.Compositor, 1);
         _travelFrom = (-capsuleWidth / 2 + 12 - (-BodyShape.Panel.Width / 2 + 22), 6 - 20, 16.0 / 22);
@@ -605,21 +615,11 @@ sealed partial class IslandSurface
     }
 
     /// <summary>A panel button for an activity's answer: the first one filled, the second quiet.</summary>
-    Button ActionButton(string label, bool primary, string command)
+    Button ActionButton(string label, bool primary, string command, double height = 32)
     {
-        var button = new Button
-        {
-            Content = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold,
-                                      Foreground = Brush(primary ? Palette.OnPrimary : Palette.Primary) },
-            Height = 32, CornerRadius = new CornerRadius(16), Padding = new Thickness(18, 0, 18, 0), BorderThickness = new Thickness(0),
-            Background = Brush(primary ? Palette.Primary : Windows.UI.Color.FromArgb(34, 255, 255, 255)),
-        };
-        button.CenterPoint = new Vector3(40, 16, 0);
-        var press = new Part(button, _win.Compositor, 1);
-        button.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => press.Place(0, 0, 0.94)), true);
-        button.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => press.Enter(0, fromScale: 0.94, spring: Springs.Press)), true);
-        AutomationProperties.SetName(button, label);
-        button.Click += (_, _) => Command?.Invoke(command);
+        var button = new IslandButton(IconArt.Label(label, 13, primary ? Palette.OnPrimary : Palette.Primary, TextFace), label,
+                                      primary ? ButtonLook.Filled : ButtonLook.Soft, double.NaN, height, height / 2, _win.Compositor, new Thickness(18, 0, 18, 0));
+        button.Button.Click += (_, _) => Command?.Invoke(command);
         return button;
     }
 
@@ -653,7 +653,7 @@ sealed partial class IslandSurface
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
-        line.Children.Add(new TextBlock { Text = other.Glyph, FontFamily = Icons, FontSize = 14, Foreground = Brush(Palette.Colour(other.Accent, Palette.Secondary)), VerticalAlignment = VerticalAlignment.Center });
+        line.Children.Add(other.Mark == Sense.Call ? IconArt.Record(14, Palette.Recording) : IconArt.Glyph(other.Glyph, 14, Palette.Colour(other.Accent, Palette.Secondary)));
         line.Children.Add(Text(other.Title + (other.Detail is { } d ? $"  ·  {d}" : ""), 13, FontWeights.Normal, other.Mark != null ? Palette.Primary : Palette.Secondary));
         if (other.Mark == Sense.Call && _recordingSince != null)
         {
@@ -665,8 +665,7 @@ sealed partial class IslandSurface
         row.Children.Add(line);
         if (other.Actions is { } actions)
         {
-            var button = ActionButton(actions.Label, false, actions.Command);
-            button.Height = 28;
+            var button = ActionButton(actions.Label, false, actions.Command, height: 28);
             Grid.SetColumn(button, 1);
             row.Children.Add(button);
         }
@@ -697,54 +696,45 @@ sealed partial class IslandSurface
     void AddFooter(string modeLine)
     {
         var footer = new Grid();
-        footer.Children.Add(Text(modeLine, 11, FontWeights.Normal, Palette.Tertiary, trim: true));
-        var quit = new HyperlinkButton { Content = "Quit", FontSize = 11, Padding = new Thickness(6, 1, 6, 1), HorizontalAlignment = HorizontalAlignment.Right, Foreground = Brush(Palette.Secondary) };
-        quit.Click += (_, _) => Command?.Invoke("quit");
-        AutomationProperties.SetName(quit, "Quit Forty");
-        var settings = new HyperlinkButton { Content = "Settings", FontSize = 11, Padding = new Thickness(6, 1, 6, 1), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 44, 0), Foreground = Brush(Palette.Secondary) };
-        settings.Click += (_, _) => Command?.Invoke("settings");
-        AutomationProperties.SetName(settings, "Open settings");
-        footer.Children.Add(settings);
-        footer.Children.Add(quit);
+        var mode = Text(modeLine, 11, FontWeights.Normal, Palette.Tertiary, trim: true);
+        mode.TextLineBounds = TextLineBounds.Tight;   // centred on its letters, like the links beside it
+        mode.VerticalAlignment = VerticalAlignment.Center;
+        mode.Margin = new Thickness(0, 0, 110, 0);
+        footer.Children.Add(mode);
+        var links = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        links.Children.Add(TextLink("Settings", "Open settings", "settings"));
+        links.Children.Add(TextLink("Quit", "Quit Forty", "quit"));
+        footer.Children.Add(links);
         _panelContent.Children.Add(footer);
     }
 
-    /// <summary>
-    /// A round button with press feedback on pointer-down (it shrinks to 0.9 at once and springs back),
-    /// so it answers before the click is even complete.
-    /// </summary>
-    Button Round(string glyph, string name, double size, bool active, bool enabled, string command, Windows.UI.Color accent, bool filledInk = false)
+    /// <summary>A round button: a centred icon on a plate of the given look (see <see cref="IslandButton"/>).</summary>
+    Button Round(FrameworkElement icon, string name, double size, ButtonLook look, string command, bool enabled = true)
     {
-        var face = new TextBlock { Text = glyph, FontFamily = Icons, FontSize = size * 0.38, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        face.Foreground = Brush(filledInk ? Palette.OnPrimary : active ? accent : Palette.Primary);
-        var button = new Button
-        {
-            Content = face, Width = size, Height = size, CornerRadius = new CornerRadius(size / 2), Padding = new Thickness(0),
-            BorderThickness = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Center, IsEnabled = enabled,
-            Background = Brush(filledInk ? Palette.Primary : active ? Windows.UI.Color.FromArgb(40, accent.R, accent.G, accent.B) : Windows.UI.Color.FromArgb(0, 0, 0, 0)),
-        };
-        button.CenterPoint = new Vector3((float)size / 2, (float)size / 2, 0);
-        var press = new Part(button, _win.Compositor, 1);
-        button.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => press.Place(0, 0, 0.9)), true);
-        button.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => press.Enter(0, fromScale: 0.9, spring: Springs.Press)), true);
-        button.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, _) => press.Enter(0, fromScale: 1, spring: Springs.Press)), true);
-        AutomationProperties.SetName(button, name);
-        button.Click += (_, _) => Command?.Invoke(command);
+        var button = new IslandButton(icon, name, look, size, size, size / 2, _win.Compositor);
+        button.Button.HorizontalAlignment = HorizontalAlignment.Center;
+        button.Button.IsEnabled = enabled;
+        button.Button.Click += (_, _) => Command?.Invoke(command);
         return button;
     }
 
-    Button Toggle(string glyph, string label, bool on, string command, Windows.UI.Color accent)
+    /// <summary>A sub-feature switch as a pill: an icon and a word, filled white when on.</summary>
+    Button Toggle(string glyph, string label, bool on, string command)
     {
+        var ink = on ? Palette.OnPrimary : Palette.Primary;
         var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        content.Children.Add(new TextBlock { Text = glyph, FontFamily = Icons, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(on ? Palette.OnPrimary : Palette.Primary) });
-        content.Children.Add(new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(on ? Palette.OnPrimary : Palette.Primary) });
-        var button = new Button
-        {
-            Content = content, Height = 28, CornerRadius = new CornerRadius(14), Padding = new Thickness(12, 0, 12, 0), BorderThickness = new Thickness(0),
-            Background = Brush(on ? Palette.Primary : Windows.UI.Color.FromArgb(34, 255, 255, 255)),
-        };
-        AutomationProperties.SetName(button, $"{label}, {(on ? "on" : "off")}");
-        button.Click += (_, _) => Command?.Invoke(command);
+        content.Children.Add(IconArt.Glyph(glyph, 13, ink));
+        content.Children.Add(IconArt.Label(label, 12.5, ink, TextFace));
+        var button = new IslandButton(content, $"{label}, {(on ? "on" : "off")}", on ? ButtonLook.Filled : ButtonLook.Soft, double.NaN, 30, 15, _win.Compositor, new Thickness(12, 0, 14, 0));
+        button.Button.Click += (_, _) => Command?.Invoke(command);
+        return button;
+    }
+
+    /// <summary>A quiet text button (the panel's footer): secondary text, a soft plate under the pointer, no underline.</summary>
+    Button TextLink(string label, string name, string command)
+    {
+        var button = new IslandButton(IconArt.Label(label, 11.5, Palette.Secondary, TextFace), name, ButtonLook.Quiet, double.NaN, 24, 12, _win.Compositor, new Thickness(9, 0, 9, 0));
+        button.Button.Click += (_, _) => Command?.Invoke(command);
         return button;
     }
 
@@ -783,6 +773,39 @@ sealed partial class IslandSurface
         }
     }
 
+    // ── For the layout check (FORTY_DEMO=layout): what should sit centred in what ──
+
+    /// <param name="Both">True to check both axes; false for vertical only (a label sits at the left of its row).</param>
+    public sealed record Probe(string Name, FrameworkElement Ink, FrameworkElement Box, bool Both);
+
+    public IEnumerable<Probe> Probes()
+    {
+        var row = _rows[_activeRow];
+        if (row.Visible) foreach (var probe in row.Probes()) yield return probe;
+        var lyric = _lyrics[_activeLyric];
+        if (lyric.Visible) yield return new Probe("lyric line", lyric.Text, lyric.Root, true);
+        if (_body.SatelliteShown)
+            yield return new Probe("satellite mark", _satelliteRecord.Visibility == Visibility.Visible ? _satelliteRecord
+                                                   : _satelliteGlyph.Visibility == Visibility.Visible ? _satelliteGlyph : _satelliteArt, _satellite, true);
+        if (_panel.IsHitTestVisible)
+            foreach (var button in Descendants<Button>(_panelContent))
+                if (button.Content is FrameworkElement content && button.ActualWidth > 0 && button.Tag as string != "switch")   // a switch's knob sits at one end by design
+                    yield return new Probe("button " + (AutomationProperties.GetName(button) is { Length: > 0 } n ? n : "?"), content is Border { Child: FrameworkElement inside } ? inside : content, button, true);
+    }
+
+    public FrameworkElement Layer => _layer;
+
+    static IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            else foreach (var inner in Descendants<T>(child)) yield return inner;
+        }
+    }
+
     /// <summary>Narrator hears a new mark assertively, even when it shows only as the dot or the satellite (F116).</summary>
     public void AnnounceMark(Activity mark)
     {
@@ -805,7 +828,9 @@ sealed partial class IslandSurface
         public Grid Root { get; }
         readonly Grid _leading, _trailing;
         readonly Border _art;
-        readonly TextBlock _glyph, _label, _detail, _percent;
+        readonly FontIcon _glyph;
+        readonly FrameworkElement _record;
+        readonly TextBlock _label, _detail, _percent;
         readonly Equaliser _equaliser;
         readonly LevelMeter _meter;
         readonly BatteryGauge _gauge;
@@ -814,6 +839,19 @@ sealed partial class IslandSurface
         readonly Part _leadPart, _labelPart, _trailPart;
         public string? Key { get; private set; }
         public bool Visible => _labelPart.Shown;
+
+        public IEnumerable<Probe> Probes()
+        {
+            yield return new Probe("capsule leading", _art.Visibility == Visibility.Visible ? _art : _record.Visibility == Visibility.Visible ? _record : _glyph, _leading, true);
+            yield return new Probe("capsule label (vertical)", _label, Root, false);
+            if (_trailing.Children.OfType<FrameworkElement>().FirstOrDefault(e => e.Visibility == Visibility.Visible) is { } trail)
+                yield return new Probe("capsule trailing (vertical)", trail, Root, false);
+            foreach (var pill in _actions.Children.OfType<Button>())
+                if (pill.Content is FrameworkElement content && _actions.Visibility == Visibility.Visible)
+                    yield return new Probe("capsule button " + AutomationProperties.GetName(pill), content is Border { Child: FrameworkElement inside } ? inside : content, pill, true);
+            yield return new Probe("capsule leading slot (vertical)", _leading, Root, false);
+            yield return new Probe("capsule trailing slot (vertical)", _trailing, Root, false);
+        }
 
         /// <summary>The capsule's values that have a place in the panel too (F4).</summary>
         public FrameworkElement DetailElement => _detail;
@@ -827,27 +865,33 @@ sealed partial class IslandSurface
         /// </summary>
         public void HideShared()
         {
-            foreach (var element in new UIElement[] { _art, _glyph, _detail, _gauge.Root, _percent }) element.Opacity = 0;
+            foreach (var element in new UIElement[] { _art, _glyph, _record, _detail, _gauge.Root, _percent }) element.Opacity = 0;
             _labelPart.Vanish();   // the label's opacity belongs to its part
         }
+
+        readonly Microsoft.UI.Composition.Compositor _compositor;
 
         public CapsuleRow(IslandWindow win, Action<string> command)
         {
             var c = win.Compositor;
+            _compositor = c;
             _command = command;
             _art = Art.Frame(22, 6);
-            _glyph = new TextBlock { FontFamily = Icons, FontSize = 16, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+            _glyph = IconArt.Glyph("", 16, Palette.Primary);
+            _record = IconArt.Record(16, Palette.Recording);
             _leading = new Grid { Width = CapsuleLayout.LeadingSlot, Height = CapsuleLayout.LeadingSlot, VerticalAlignment = VerticalAlignment.Center };
             _leading.Children.Add(_art);
             _leading.Children.Add(_glyph);
+            _leading.Children.Add(_record);
             _leading.CenterPoint = new Vector3(12, 12, 0);
 
-            _label = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left };
-            _detail = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+            // Text is centred on its letters (cap height to baseline): centring the line box leaves it riding high.
+            _label = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left, TextLineBounds = TextLineBounds.Tight };
+            _detail = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, TextLineBounds = TextLineBounds.Tight };
             Typography.SetNumeralAlignment(_detail, FontNumeralAlignment.Tabular);
             _equaliser = new Equaliser(c);
             _gauge = new BatteryGauge(c);
-            _percent = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+            _percent = new TextBlock { FontFamily = TextFace, FontSize = 13, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, TextLineBounds = TextLineBounds.Tight };
             Typography.SetNumeralAlignment(_percent, FontNumeralAlignment.Tabular);
             _battery = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             _battery.Children.Add(_gauge.Root);
@@ -885,12 +929,14 @@ sealed partial class IslandSurface
         {
             var a = content.Activity;
             Key = content.Key;
-            foreach (var element in new UIElement[] { _art, _glyph, _detail, _gauge.Root, _percent }) element.Opacity = 1;
+            foreach (var element in new UIElement[] { _art, _glyph, _record, _detail, _gauge.Root, _percent }) element.Opacity = 1;
             bool art = content.Music?.ArtSmall != null;
             Art.Fill(_art, content.Music?.ArtSmall);
             _art.Visibility = art ? Visibility.Visible : Visibility.Collapsed;
-            _glyph.Visibility = art ? Visibility.Collapsed : Visibility.Visible;
-            _glyph.Text = a.Glyph;
+            bool record = !art && a.Mark == Sense.Call;
+            _record.Visibility = record ? Visibility.Visible : Visibility.Collapsed;
+            _glyph.Visibility = art || record ? Visibility.Collapsed : Visibility.Visible;
+            _glyph.Glyph = a.Glyph;
             _glyph.Foreground = Brush(Palette.Colour(a.Accent, Palette.Primary));
             _label.Text = a.Title;
             _label.Foreground = Brush(Palette.Primary);
@@ -946,16 +992,10 @@ sealed partial class IslandSurface
         /// </summary>
         Button Pill(string label, bool primary, string command)
         {
-            var button = new Button
-            {
-                Content = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold,
-                                          Foreground = Brush(primary ? Palette.OnPrimary : Palette.Primary) },
-                Height = 24, MinWidth = 0, CornerRadius = new CornerRadius(12), Padding = new Thickness(12, 0, 12, 0), BorderThickness = new Thickness(0),
-                Background = Brush(primary ? Palette.Primary : Windows.UI.Color.FromArgb(46, 255, 255, 255)),
-            };
-            AutomationProperties.SetName(button, label);
-            button.Click += (_, _) => _command(command);
-            return button;
+            var island = new IslandButton(IconArt.Label(label, 12, primary ? Palette.OnPrimary : Palette.Primary, TextFace), label,
+                                          primary ? ButtonLook.Filled : ButtonLook.Soft, double.NaN, 26, 13, _compositor, new Thickness(12, 0, 12, 0));
+            island.Button.Click += (_, _) => _command(command);
+            return island;
         }
 
         public void SetLevel(double level) { if (_meter.Root.Visibility == Visibility.Visible && Visible) _meter.Set(level); }
@@ -1000,6 +1040,7 @@ sealed partial class IslandSurface
     {
         public const double Size = 13.5;
         public Grid Root { get; }
+        public TextBlock Text => _text;
         readonly TextBlock _text;
         readonly Part _part;
         public string? Key { get; private set; }
@@ -1011,11 +1052,15 @@ sealed partial class IslandSurface
             {
                 FontFamily = TextFace, FontSize = Size, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 2,
                 TextAlignment = TextAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis, LineHeight = 18,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                // Centred on its letters: the block runs from the first line's cap height to the last
+                // line's baseline, so a line never rides high in the island; lines are exactly 18 apart.
+                TextLineBounds = TextLineBounds.Tight,
             };
             Root = new Grid { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false, Padding = new Thickness(18, 0, 18, 0) };
             Root.Children.Add(_text);
             _part = new Part(_text, win.Compositor);
+            _text.SizeChanged += (_, e) => _text.CenterPoint = new Vector3((float)e.NewSize.Width / 2, (float)e.NewSize.Height / 2, 0);   // it grows and shrinks about its own middle
         }
 
         public void Fill(string key, string text, bool dim, BodyShape shape, double insetDip)
@@ -1024,10 +1069,15 @@ sealed partial class IslandSurface
             _text.Text = text;
             _text.FontFamily = dim ? Icons : TextFace;
             _text.Foreground = Brush(dim ? Palette.Secondary : Palette.Primary);
+            // One line is centred on its letters. Two lines keep their natural spacing (letter-tight
+            // bounds would pack them on top of each other) on an 18 DIP rhythm.
+            bool two = shape.Name == "lyric2";
+            _text.TextLineBounds = two ? TextLineBounds.Full : TextLineBounds.Tight;
+            _text.LineHeight = two ? 18 : 0;
+            _text.LineStackingStrategy = two ? LineStackingStrategy.BlockLineHeight : LineStackingStrategy.MaxHeight;
             Root.Width = shape.Width;
             Root.Height = shape.Height;
             Root.Margin = new Thickness(0, shape.Top + insetDip, 0, 0);
-            _text.CenterPoint = new Vector3((float)(shape.Width - 36) / 2, (float)shape.Height / 2, 0);
         }
 
         public void Enter(int delayMs) => _part.Enter(delayMs, fromScale: 0.96, fromY: 9, spring: Springs.Stream);

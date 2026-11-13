@@ -387,6 +387,43 @@ The full review is in docs/transitions.md.
 
 **Every display (F7).** Each other display shows a live copy of the island: the compositor draws the island's tree into a surface, and a window there shows that surface. There is nothing to choreograph. Every frame is the island's own frame.
 
+## 14d. Buttons, icons and centring (13 November)
+
+**One button.** Every button in the island is an `IslandButton`. WinUI's own button paints hover and pressed from theme resources, which is where the grey hover square came from. Here those are all transparent, and the button carries its own plate.
+
+| Look | Rest | Hover | Pressed | Used for |
+| --- | --- | --- | --- | --- |
+| Quiet | none | 9% white | 16% white | previous, next, back, footer links |
+| Soft | 10% white | 16% | 22% | toggles that are off, secondary answers, chips |
+| Filled | white | 90% | 80% | play, primary answers, toggles that are on |
+| Tinted | accent 18% | 26% | 34% | shuffle or repeat when on |
+
+- **States:** the plate eases between states in 120 ms. On press the button gives way to 0.94 at once and returns on `press`.
+- **Disabled:** 35% opacity.
+- **Keyboard focus:** a 2 DIP white ring 3 DIPs outside the plate, following its shape. The pointer never shows it.
+
+| Button | Size | Corner |
+| --- | --- | --- |
+| Play / pause | 56 × 56 | round |
+| Previous / next | 44 × 44 | round |
+| Shuffle / repeat | 36 × 36 | round |
+| Toggles | 30 tall, 12/14 padding | pill |
+| Answers in the panel | 32 tall | pill |
+| Capsule answers | 26 tall | pill |
+| Footer links | 24 tall | pill |
+
+**Icons.**
+- **Transport and recording mark:** geometry, filled, centred on visual weight. The play triangle is centred on its centroid, so it looks centred rather than measuring centred. The recording mark is a ring (11% of its size) and a dot (50%), exactly concentric.
+- **Font glyphs:** shown as `FontIcon`, which centres the glyph's em box. A glyph in a `TextBlock` rides on the font's line metrics and sits high or low.
+
+**Text.**
+- **A label in a fixed-height box** (capsule label and value, button text, a single lyric line, the footer) is centred on its letters: the box runs from cap height to baseline (`TextLineBounds.Tight`), and descenders hang below. Centring the line box instead leaves text riding high, which is what made lyric lines look a little upward.
+- **Two-line lyrics** keep normal line bounds on an 18 DIP rhythm, because letter-tight bounds pack the lines on top of each other.
+
+**Checked, not eyeballed.** `FORTY_DEMO=layout` runs the island off every screen. It renders each icon and label and measures its ink against its box, and captures the island's own window for the composed result.
+- **Result:** within one device pixel (0.8 DIP at 125%) everywhere. Positions snap to whole pixels, so half a pixel is the limit.
+- **Exception:** text can sit up to 1.2 DIP off sideways, from its letters' side-bearings.
+
 ## 14. Never
 
 - Take keyboard focus because the pointer passed over the island.

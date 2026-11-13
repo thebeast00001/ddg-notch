@@ -53,7 +53,8 @@ sealed partial class App : Application
         string diagnostics = Path.Combine(Home, "diagnostics");
         bool hold = Environment.GetEnvironmentVariable("FORTY_DEMO") == "hold";
         bool transitions = Environment.GetEnvironmentVariable("FORTY_DEMO") == "transitions";
-        bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1" || hold || transitions;
+        bool layout = Environment.GetEnvironmentVariable("FORTY_DEMO") == "layout";
+        bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1" || hold || transitions || layout;
 
         // Crash reports carry no personal data (F148) and stay on this PC.
         void Crash(Exception error, string where)
@@ -77,6 +78,8 @@ sealed partial class App : Application
             // FORTY_WINDOW_HEIGHT is for measuring only (what the window's size costs per frame).
             double height = double.TryParse(Environment.GetEnvironmentVariable("FORTY_WINDOW_HEIGHT"), out double h) ? h : WindowHeight;
             var window = new IslandWindow(WindowWidth, height);
+            // The layout check runs off every screen: nothing shows on the display and nothing of yours is captured.
+            if (layout) window.Window.AppWindow.Move(new Windows.Graphics.PointInt32(-12000, -12000));
             var meter = new Meter(flags.IsOn("diagnostics") && !demo ? diagnostics : null);
             var settings = new Settings(Path.Combine(Home, "settings.json"));
             _controller = new IslandController(window, flags, settings, meter);
@@ -88,6 +91,7 @@ sealed partial class App : Application
             Log(log, $"visible {startMs:0} ms after the process started; adapters: " +
                      string.Join(", ", _controller.Adapters.Select(a => $"{a.Name} {a.Status.Availability}")));
             if (hold) await Demo.HoldAsync(_controller);
+            else if (layout) await LayoutCheck.RunAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-layout"));
             else if (transitions) await Demo.TransitionsAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-transitions"));
             else if (demo) await Demo.RunAsync(window, _controller, log ?? Path.Combine(Path.GetTempPath(), "forty-demo"));
         }

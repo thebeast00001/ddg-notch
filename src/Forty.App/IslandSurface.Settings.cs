@@ -61,7 +61,7 @@ sealed partial class IslandSurface
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var back = Round("", "Back", 30, false, true, "back", Palette.Primary);
+        var back = Round(IconArt.Glyph("\uE72B", 14, Palette.Primary), "Back", 32, ButtonLook.Quiet, "back");
         header.Children.Add(back);
         var title = Text("Settings", 17, FontWeights.SemiBold, Palette.Primary, display: true);
         title.VerticalAlignment = VerticalAlignment.Center;
@@ -95,7 +95,7 @@ sealed partial class IslandSurface
         {
             var line = new Grid();
             line.Children.Add(Text(app, 13, FontWeights.Normal, Palette.Primary));
-            var remove = Round("", $"Stop hiding for {app}", 24, false, true, $"hide:{app}", Palette.Secondary);
+            var remove = Round(IconArt.Glyph("\uE711", 10, Palette.Secondary), $"Stop hiding for {app}", 24, ButtonLook.Quiet, $"hide:{app}");
             remove.HorizontalAlignment = HorizontalAlignment.Right;
             line.Children.Add(remove);
             apps.Children.Add(line);
@@ -150,7 +150,8 @@ sealed partial class IslandSurface
 
         var footer = new Grid();
         footer.Children.Add(Text($"Forty {model.Version} · phase 1", 11, FontWeights.Normal, Palette.Tertiary));
-        var quit = new HyperlinkButton { Content = "Quit", FontSize = 11, Padding = new Thickness(6, 1, 6, 1), HorizontalAlignment = HorizontalAlignment.Right, Foreground = Brush(Palette.Secondary) };
+        var quit = TextLink("Quit", "Quit Forty", "quit");
+        quit.HorizontalAlignment = HorizontalAlignment.Right;
         quit.Click += (_, _) => Command?.Invoke("quit");
         footer.Children.Add(quit);
         sections.Children.Add(footer);
@@ -241,8 +242,8 @@ sealed partial class IslandSurface
             else slide.Place(state ? 18 : 0, 0, 1);
         }
         Paint(false);
-        var button = new Button { Content = track, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = Brush(Windows.UI.Color.FromArgb(0, 0, 0, 0)), CornerRadius = new CornerRadius(12) };
-        AutomationProperties.SetName(button, name);
+        Button button = new IslandButton(track, name, ButtonLook.None, 42, 24, 12, _win.Compositor);
+        button.Tag = "switch";
         AutomationProperties.SetItemStatus(button, state ? "On" : "Off");
         button.Click += (_, _) =>
         {
@@ -257,17 +258,17 @@ sealed partial class IslandSurface
     /// <summary>A pill that toggles between outlined and filled on press, for choices such as alert levels.</summary>
     Button Chip(string label, bool on, string command)
     {
-        var text = new TextBlock { Text = label, FontFamily = TextFace, FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
-        var button = new Button { Content = text, Height = 28, CornerRadius = new CornerRadius(14), Padding = new Thickness(12, 0, 12, 0), BorderThickness = new Thickness(0) };
+        var text = IconArt.Label(label, 12, Palette.Primary, TextFace);
+        var island = new IslandButton(text, label, ButtonLook.Soft, double.NaN, 28, 14, _win.Compositor, new Thickness(13, 0, 13, 0));
+        Button button = island;
         bool state = on;
         void Paint()
         {
-            button.Background = Brush(state ? Palette.Primary : Windows.UI.Color.FromArgb(34, 255, 255, 255));
+            island.Look = state ? ButtonLook.Filled : ButtonLook.Soft;
             text.Foreground = Brush(state ? Palette.OnPrimary : Palette.Primary);
             AutomationProperties.SetItemStatus(button, state ? "Selected" : "Not selected");
         }
         Paint();
-        AutomationProperties.SetName(button, label);
         button.Click += (_, _) =>
         {
             if (!command.StartsWith("hide:", StringComparison.Ordinal) && command != "open-diagnostics") { state = !state; Paint(); }

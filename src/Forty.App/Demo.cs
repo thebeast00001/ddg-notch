@@ -317,7 +317,7 @@ static class Demo
     }
 
     /// <summary>Made-up lyric lines (not from any real song), timed for the demo.</summary>
-    const string Lyrics = """
+    internal const string Lyrics = """
         [00:00.00]
         [00:03.80]Lights on the water
         [00:06.00]Every wave remembers the shape of the shore it left behind
@@ -327,7 +327,7 @@ static class Demo
         """;
 
     /// <summary>Draws a made-up album cover: a three-colour gradient with soft circles and a word.</summary>
-    static async Task<byte[]> CoverAsync((int R, int G, int B)[] colours, string word)
+    internal static async Task<byte[]> CoverAsync((int R, int G, int B)[] colours, string word)
     {
         var device = CanvasDevice.GetSharedDevice();
         using var target = new CanvasRenderTarget(device, 300, 300, 96);
@@ -352,6 +352,34 @@ static class Demo
     }
 
     static GraphicsCaptureItem? Item(IslandWindow win) => GraphicsCaptureItem.TryCreateFromDisplayId(new DisplayId { Value = win.DisplayIdValue });
+
+    /// <summary>
+    /// Saves a rectangle of the island's own window (pixels, window-relative), from a frame Windows
+    /// composed for that window alone: nothing else on the screen is in it, and it works while the
+    /// window is off every display (the layout check).
+    /// </summary>
+    internal static async Task<bool> SaveWindowAsync(IslandWindow win, RectInt32 rect, string path)
+    {
+        var device = CanvasDevice.GetSharedDevice();
+        if (GraphicsCaptureItem.TryCreateFromWindowId(new Windows.UI.WindowId { Value = (ulong)win.Hwnd }) is not { } item) return false;
+        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, DirectXPixelFormat.B8G8R8A8UIntNormalized, 1, item.Size);
+        using var session = pool.CreateCaptureSession(item);
+        Quiet(session);
+        var done = new TaskCompletionSource<CanvasRenderTarget?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.FrameArrived += (p, _) =>
+        {
+            using var frame = p.TryGetNextFrame();
+            if (frame == null || done.Task.IsCompleted) return;
+            try { done.TrySetResult(Crop(device, frame, rect)); }
+            catch (Exception ex) { done.TrySetException(ex); }
+        };
+        session.StartCapture();
+        if (await Task.WhenAny(done.Task, Task.Delay(3000)) != done.Task) return false;
+        using var image = await done.Task;
+        if (image == null) return false;
+        await image.SaveAsync(path, CanvasBitmapFileFormat.Png);
+        return true;
+    }
 
     /// <summary>Saves one rectangle of the monitor (pixels, monitor-relative) as a PNG, from a composed frame.</summary>
     static async Task<bool> SaveAsync(IslandWindow win, RectInt32 rect, string path)
