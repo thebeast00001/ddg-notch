@@ -464,7 +464,12 @@ static class Demo
         using var bitmap = CanvasBitmap.CreateFromDirect3D11Surface(device, frame.Surface);
         var target = new CanvasRenderTarget(device, rect.Width, rect.Height, 96f);
         using (var drawing = target.CreateDrawingSession())
+        {
+            // A new render target's memory may still hold an earlier picture: clear it, or a window's
+            // transparent areas show that picture through (a "ghost" of an earlier state).
+            drawing.Clear(Microsoft.UI.Colors.Transparent);
             drawing.DrawImage(bitmap, new Rect(0, 0, rect.Width, rect.Height), new Rect(rect.X, rect.Y, rect.Width, rect.Height));
+        }
         return target;
     }
 

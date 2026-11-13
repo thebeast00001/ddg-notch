@@ -23,7 +23,16 @@ public sealed class BluetoothAdapter() : Adapter("bluetooth")
     readonly Dictionary<string, Endpoint> _endpoints = new();
     readonly Dictionary<string, BluetoothState> _devices = new();
     readonly List<DeviceWatcher> _watchers = new();
+    readonly Dictionary<string, long> _lastConnect = new();
     Timer? _reread;
+    long _events;
+
+    /// <summary>How many times Windows' watchers have called in (a count only, for measuring the idle cost).</summary>
+    public long Events => Interlocked.Read(ref _events);
+
+    /// <summary>How many battery reads have run (a count only, for measuring the idle cost).</summary>
+    public long Reads => Interlocked.Read(ref _reads);
+    long _reads;
 
     /// <summary>Raised with the previous state (null if first seen) and the new one.</summary>
     public event Action<BluetoothState?, BluetoothState>? Changed;
@@ -46,13 +55,13 @@ public sealed class BluetoothAdapter() : Adapter("bluetooth")
         foreach (var (selector, le) in new[] { (BluetoothDevice.GetDeviceSelectorFromPairingState(true), false), (BluetoothLEDevice.GetDeviceSelectorFromPairingState(true), true) })
         {
             var watcher = DeviceInformation.CreateWatcher(selector, properties, DeviceInformationKind.AssociationEndpoint);
-            watcher.Added += (_, info) => Upsert(info.Id, info.Name, info.Properties, le);
-            watcher.Updated += (_, update) => Upsert(update.Id, null, update.Properties, le);
-            watcher.Removed += (_, update) => { lock (_gate) _endpoints.Remove(update.Id); };
+            watcher.Added += (_, info) => { Interlocked.Increment(ref _events); Upsert(info.Id, info.Name, info.Properties, le); };
+            watcher.Updated += (_, update) => { Interlocked.Increment(ref _events); Upsert(update.Id, null, update.Properties, le); };
+            watcher.Removed += (_, update) => { Interlocked.Increment(ref _events); lock (_gate) _endpoints.Remove(update.Id); };
             watcher.Start();
             _watchers.Add(watcher);
         }
-        _reread = new Timer(_ => { foreach (var d in Devices.Where(d => d.Connected)) _ = ReadBatteryAsync(d.Id); }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+        _reread = new Timer(_ => { foreach (var d in Devices.Where(d => d.Connected && ShowsBattery(d.Kind))) _ = ReadBatteryAsync(d.Id); }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
     }
 
     void Upsert(string id, string? name, IReadOnlyDictionary<string, object> properties, bool le)
@@ -69,9 +78,27 @@ public sealed class BluetoothAdapter() : Adapter("bluetooth")
             (before, after) = Recompute(endpoint.Container);
         }
         if (after != null && after != before) Changed?.Invoke(before, after);
-        // Newly connected, or already connected when first seen: read its battery.
-        if (after is { Connected: true } && before?.Connected != true) _ = ReadSoonAfterConnecting(after.Id);
+        // Newly connected (or already connected when first seen, or just recognised as a headset): read its battery.
+        if (after is { Connected: true } && ShowsBattery(after.Kind) && !(before is { Connected: true } && ShowsBattery(before.Kind)))
+        {
+            long now = Environment.TickCount64;
+            bool flapping;
+            lock (_gate)
+            {
+                flapping = _lastConnect.TryGetValue(after.Id, out long last) && now - last < 60_000;
+                _lastConnect[after.Id] = now;
+            }
+            _ = ReadSoonAfterConnecting(after.Id, once: flapping);
+        }
     }
+
+    /// <summary>
+    /// Only headsets, speakers, keyboards and mice have their battery read: those are the devices the
+    /// island tells you about, and Windows doesn't report a phone's battery this way. Each read searches
+    /// the device tree (6–19 ms of CPU, measured 13 November), and a paired phone that reconnects every
+    /// half-minute or so to sync was costing about 0.15% of a core at rest in reads that always came back empty.
+    /// </summary>
+    static bool ShowsBattery(DeviceKind kind) => kind is DeviceKind.Audio or DeviceKind.Input;
 
     /// <summary>Folds the endpoints of one container into one device. Caller holds the lock.</summary>
     (BluetoothState? Before, BluetoothState? After) Recompute(string container)
@@ -89,10 +116,13 @@ public sealed class BluetoothAdapter() : Adapter("bluetooth")
         return (before, after);
     }
 
-    /// <summary>Headsets usually report their battery a few seconds after connecting, so it is read three times.</summary>
-    async Task ReadSoonAfterConnecting(string container)
+    /// <summary>
+    /// Headsets usually report their battery a few seconds after connecting, so it is read three times;
+    /// a device that connected again within a minute (dropping in and out) is read once.
+    /// </summary>
+    async Task ReadSoonAfterConnecting(string container, bool once)
     {
-        foreach (int delay in new[] { 0, 4000, 12000 })
+        foreach (int delay in once ? new[] { 0 } : new[] { 0, 4000, 12000 })
         {
             if (delay > 0) await Task.Delay(delay);
             await ReadBatteryAsync(container);
@@ -105,6 +135,7 @@ public sealed class BluetoothAdapter() : Adapter("bluetooth")
     /// </summary>
     public async Task<int?> ReadBatteryAsync(string container)
     {
+        Interlocked.Increment(ref _reads);
         try
         {
             var parts = await DeviceInformation.FindAllAsync($"System.Devices.ContainerId:=\"{{{container}}}\"", new[] { BatteryProperty }, DeviceInformationKind.Device);

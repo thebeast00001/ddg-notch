@@ -17,6 +17,7 @@ public sealed class Meter
     {
         "render.ms", "expand.ms", "collapse.ms", "start.ms", "cpu.percent", "memory.mb", "frames.dropped",
         "service.ms", "dictation.ms", "display.hz", "motion.missed", "motion.fps",
+        "bluetooth.events", "keys.scan.ms", "keys.found",
     };
 
     const int MaxSamplesPerName = 512;

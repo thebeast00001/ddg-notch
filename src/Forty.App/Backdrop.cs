@@ -36,11 +36,7 @@ sealed class Backdrop
     {
         _c = compositor;
         _body = body;
-        _root = compositor.CreateContainerVisual();
-        _root.Size = body.Layers.Size;
-        _root.Clip = body.CreateClip();
-        body.Layers.Children.InsertAtTop(_root);
-
+        var brushes = new CompositionBrush[3];
         for (int i = 0; i < 3; i++)
         {
             var brush = compositor.CreateRadialGradientBrush();
@@ -52,27 +48,57 @@ sealed class Backdrop
             brush.ColorStops.Add(_centres[i]);
             brush.ColorStops.Add(_middles[i]);
             brush.ColorStops.Add(compositor.CreateColorGradientStop(1f, Windows.UI.Color.FromArgb(0, 0, 0, 0)));
-
-            var glow = _glows[i] = compositor.CreateSpriteVisual();
-            glow.Brush = brush;
-            var drift = _drift[i] = compositor.CreatePropertySet();
-            drift.InsertVector2("p", Paths[i].Path[0]);
-            // A glow is a little larger than the body's longer side and wanders around its centre.
-            body.Bind(glow, "Size", "Vector2(Max(w.v, h.v) * 1.15, Max(w.v, h.v) * 1.15)");
-            body.Bind(glow, "Offset",
-                "Vector3(layout.hostW * 0.5 + d.p.X * w.v - Max(w.v, h.v) * 0.575, top.v + layout.inset + h.v * 0.5 + d.p.Y * Max(h.v, 60) - Max(w.v, h.v) * 0.575, 0)",
-                ("d", drift));
-            _root.Children.InsertAtTop(glow);
+            brushes[i] = brush;
+            _drift[i] = compositor.CreatePropertySet();
+            _drift[i].InsertVector2("p", Paths[i].Path[0]);
         }
-
         // The scrim: a soft darkening over the glows so white text always reads.
-        var scrim = compositor.CreateSpriteVisual();
-        scrim.Brush = compositor.CreateColorBrush(Windows.UI.Color.FromArgb(70, 0, 0, 0));
-        scrim.Size = _root.Size;
-        _root.Children.InsertAtTop(scrim);
+        var scrim = compositor.CreateColorBrush(Windows.UI.Color.FromArgb(70, 0, 0, 0));
 
+        _root = Layer(body.CreateClip(), brushes, scrim, _glows);
         _opacity = new CompositionSpring(compositor, 0);
         _opacity.Drive(_root, "Opacity", "Clamp(s.v, 0, 1)");
+
+        // F5: while the satellite pulls out of the capsule's end (or is drawn back in), the neck and the
+        // drop are the capsule's own liquid, so the same glows, in the same places, show inside them too.
+        // Each copy starts from the body's own fill, so where the drop still overlaps the capsule it
+        // reproduces it exactly instead of doubling its glows. As the drop separates the copies fade and
+        // it settles to its own fill; at rest they are invisible, so a resting island draws nothing extra.
+        var (neck, drop) = body.CreateDropClips();
+        foreach (var clip in new CompositionClip[] { neck, drop })
+            body.Bind(Layer(clip, brushes, scrim, new SpriteVisual[3], body.Fill), "Opacity", "Clamp(s.v, 0, 1) * " + Body.Joined, ("s", _opacity.Props));
+    }
+
+    /// <summary>The three glows and the scrim (over the body's fill, for a copy), clipped to one shape and placed in the body's layers.</summary>
+    ContainerVisual Layer(CompositionClip clip, CompositionBrush[] brushes, CompositionBrush scrimBrush, SpriteVisual[] glows, CompositionBrush? fill = null)
+    {
+        var layer = _c.CreateContainerVisual();
+        layer.Size = _body.Layers.Size;
+        layer.Clip = clip;
+        if (fill != null)
+        {
+            var under = _c.CreateSpriteVisual();
+            under.Brush = fill;
+            under.Size = layer.Size;
+            layer.Children.InsertAtTop(under);
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            var glow = glows[i] = _c.CreateSpriteVisual();
+            glow.Brush = brushes[i];
+            // A glow is a little larger than the body's longer side and wanders around its centre.
+            _body.Bind(glow, "Size", "Vector2(Max(w.v, h.v) * 1.15, Max(w.v, h.v) * 1.15)");
+            _body.Bind(glow, "Offset",
+                "Vector3(layout.hostW * 0.5 + d.p.X * w.v - Max(w.v, h.v) * 0.575, top.v + layout.inset + h.v * 0.5 + d.p.Y * Max(h.v, 60) - Max(w.v, h.v) * 0.575, 0)",
+                ("d", _drift[i]));
+            layer.Children.InsertAtTop(glow);
+        }
+        var scrim = _c.CreateSpriteVisual();
+        scrim.Brush = scrimBrush;
+        scrim.Size = layer.Size;
+        layer.Children.InsertAtTop(scrim);
+        _body.Layers.Children.InsertAtTop(layer);
+        return layer;
     }
 
     public bool Shown => _opacity.Target > 0.5;

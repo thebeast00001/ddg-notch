@@ -334,6 +334,7 @@ A loop also stops whenever the element that holds it hides, including fades to z
 - **When it snaps:** once the gap is 70% crossed, so the satellite rests as a separate drop.
 - **How it's drawn:** precomputed for 25 points of the journey and played by one path animation whose progress is bound to the satellite's spring. It cannot fall behind the drop or overshoot differently.
 - **During the join:** the hairline steps back (it would draw a seam across the neck). The satellite's own edge appears from 80% out, and its glyph or cover fades in from 60%.
+- **Its colour:** with album colours on, the neck and the drop carry the capsule's glows, in the same places, so the colour pulls out of the capsule with them. From 60% to 95% out they fade, and the separated drop rests in the body's own tint. Before this, the neck and drop were the flat tint from the first frame, a visible seam against the glowing capsule for about 100 ms.
 - **Leaving:** the reverse on `quick`. The drop shrinks as it is drawn back in and absorbed.
 
 | Element | Role | Starts | Motion |

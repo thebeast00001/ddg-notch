@@ -25,8 +25,12 @@ sealed partial class App : Application
     public const double WindowWidth = 560, WindowHeight = 640;   // room for the full settings page
     IslandController? _controller;
 
-    /// <summary>Forty's folder for settings, flags and diagnostics: %LOCALAPPDATA%\Forty, or FORTY_HOME for tests.</summary>
+    /// <summary>
+    /// Forty's folder for settings, flags, keys and diagnostics: %LOCALAPPDATA%\Forty, or FORTY_HOME for
+    /// tests. A scripted demo uses a folder of its own, so it never changes your flags, settings or keys.
+    /// </summary>
     public static string Home => Environment.GetEnvironmentVariable("FORTY_HOME") is { Length: > 0 } home ? home
+        : Environment.GetEnvironmentVariable("FORTY_DEMO") is { Length: > 0 } ? Path.Combine(Path.GetTempPath(), "forty-demo-home")
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Forty");
 
     /// <summary>
@@ -72,6 +76,8 @@ sealed partial class App : Application
         {
             Directory.CreateDirectory(Home);
             string flagsFile = Path.Combine(Home, "flags.json");
+            if (demo && Environment.GetEnvironmentVariable("FORTY_HOME") is not { Length: > 0 })
+                foreach (var file in new[] { flagsFile, Path.Combine(Home, "settings.json") }) File.Delete(file);   // each demo starts from the defaults
             if (!File.Exists(flagsFile)) File.WriteAllText(flagsFile, DefaultFlags);
             var flags = new FeatureFlags(flagsFile, developer: Environment.GetEnvironmentVariable("FORTY_CHANNEL") != "public");
 
@@ -79,7 +85,9 @@ sealed partial class App : Application
             double height = double.TryParse(Environment.GetEnvironmentVariable("FORTY_WINDOW_HEIGHT"), out double h) ? h : WindowHeight;
             var window = new IslandWindow(WindowWidth, height);
             // The layout check runs off every screen: nothing shows on the display and nothing of yours is captured.
-            if (layout) window.Window.AppWindow.Move(new Windows.Graphics.PointInt32(-12000, -12000));
+            // FORTY_OFFSCREEN=1 does the same for measuring a live island (adapters on) without it on your display.
+            if (layout || Environment.GetEnvironmentVariable("FORTY_OFFSCREEN") == "1")
+                window.Window.AppWindow.Move(new Windows.Graphics.PointInt32(-12000, -12000));
             var meter = new Meter(flags.IsOn("diagnostics") && !demo ? diagnostics : null);
             var settings = new Settings(Path.Combine(Home, "settings.json"));
             _controller = new IslandController(window, flags, settings, meter);

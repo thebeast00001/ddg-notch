@@ -368,6 +368,22 @@ You said the buttons looked cheap, lyrics sat a little high, and the red dot was
 - **Text.** Labels and single lyric lines are centred on their letters, from cap height to baseline, instead of on the line box.
 - **Measured.** `FORTY_DEMO=layout` measures every icon and label against its box, off screen. Everything is within one device pixel vertically. The rules are in MOTION.md 14d.
 
+### The code-only items (13 November)
+
+- **The drop's colour (F5).** With album colours on, the neck and the drop carry the capsule's glows, so the colour pulls out of the capsule with them and settles to the tint as the drop separates. Before, they were the flat tint from the first frame, a visible seam against the glowing capsule. The layout check now holds the drop at 20, 40, 60 and 80% of its way out and captures each pose.
+- **The key check (F121).** Half a minute after starting, and once a day after that, every file in Forty's folder (flags, settings, diagnostics and crash reports, never the encrypted key file) is searched for each stored key. It looks for the whole key, its start or end, and any run of 17 or more of its characters, also as JSON escapes it. Key text found is cut out of the file. Settings › Diagnostics shows the last result in words; only counts are recorded. Five tests cover it.
+- **Bluetooth's idle cost (F130), found.** It was the battery reads. Each one searches the device tree (6–19 ms of CPU warm, about 39 ms cold). Three ran on every connect, for every kind of device, and a paired phone reconnects about twice a minute to sync. Windows doesn't report a phone's battery that way, so every one of those reads came back empty. Now only headsets, speakers, keyboards and mice are read, and a device that reconnects within a minute is read once.
+
+| Measured | Before | After |
+| --- | --- | --- |
+| Bluetooth adapter alone (`Forty.Tests.exe bt-cost`) | 0.313% of a core (4 reconnects in 150 s) | 0.033% (8 reconnects in 240 s, no reads) |
+| Island off screen, Bluetooth on vs off | about 0.3% more with it on | 0.319% vs 0.326%: no difference |
+
+- **Two problems in the tooling, fixed.**
+  - **Demos wrote your real folder.** Scripted demos used it for flags, and the full demo for a made-up key. Your stored keys were checked (by length and comparison only) and are intact. Demos now use `%TEMP%\forty-demo-home`.
+  - **Capture ghosts.** Window captures could show an earlier frame through transparent areas, because the picture buffer wasn't cleared. The island itself never showed it.
+- **Still open:** the island's own floor at rest is about 0.3% of a core, off screen with Bluetooth off, on two worker threads. The exit test asks for 0.0%.
+
 ### Phase 1 checklist: built and remaining (13 November)
 
 | Feature | State | Built | Remaining |
@@ -376,7 +392,7 @@ You said the buttons looked cheap, lyrics sat a little high, and the red dot was
 | F2 Smooth morphs between states | Done | One body, layered entrances, sequenced swaps, blur out 0 → 6 and in 8 → 0, all 72 transitions reviewed in docs/transitions.md | — |
 | F3 Clean retargeting | Done | Additive springs with slot folding; 40 changes in 0.4 s without a jump | — |
 | F4 Panels grow from the pill | Done | Body first; the cover, glyph, label, value, battery gauge and percentage travel from capsule to panel, one copy at a time | — |
-| F5 Priority-aware stacking | Done | Queue, satellite, "+N", holds, the liquid bridge | The drop takes the base tint while the capsule shows album colours (about 100 ms) |
+| F5 Priority-aware stacking | Done | Queue, satellite, "+N", holds, the liquid bridge; the neck and drop carry the capsule's album glows while joined, then settle to the tint | — |
 | F6 Many ways to open | Partial | Hover with intent, click, Ctrl+Alt+Space, lean on hover | Voice (phase 2) |
 | F7 Placement on every monitor | Not verified | Re-placed on display, scale and taskbar changes; below a top taskbar; a live copy on every display (checked on one) | A second monitor at another scale |
 | F8 Follow the active display | Not verified | The setting, the 300 ms rule (tested), the move filmed | A second monitor |
@@ -389,10 +405,10 @@ You said the buttons looked cheap, lyrics sat a little high, and the red dot was
 | F46 Headset battery, only when real | Done | Windows' own reading, only while connected | — |
 | F47 Charging and battery | Done | Gauge, sweep, alerts at levels you choose, an 80% charge alert, time to full, health | — |
 | F116 Indicators that cannot be hidden | Done | Marks in every mode as capsule, satellite or dot; the fail-safe checked across real processes; Narrator | Wake word and screen marks wait for phase 2 |
-| F121 Credentials in protected storage | Partial | Encrypted store in the app; Service keys in settings; Windows Hello to remove one | The automatic scan of written files; Windows' credential locker once packaged |
+| F121 Credentials in protected storage | Partial | Encrypted store in the app; Service keys in settings; Windows Hello to remove one; an automatic key check of every file Forty writes (30 s after start, then daily) that cuts out any key text, whole or in part, with its result in Settings › Diagnostics | Windows' credential locker once packaged |
 | F127 Visuals follow power | Done | Glass, colours and equaliser stop in battery saver; ambient motion stepped at 30 Hz | — |
 | F128 Less work in battery saver | Done | The island tells the speech process; model let go after a minute; calls checked cheaply and half as often; 10 idle minutes averaged 0.029% | — |
-| F130 Thermal limits and a light idle | Partial | Resting springs, stepped ambient motion, fewer redraws, guarded callbacks; memory floor measured | Memory 94–96 MB against 90 (needs Native AOT); Bluetooth's 0.5% at rest |
+| F130 Thermal limits and a light idle | Partial | Resting springs, stepped ambient motion, fewer redraws, guarded callbacks; memory floor measured; Bluetooth's idle cost found and removed (battery reads only for headsets and keyboards) | Memory 94–96 MB against 90 (needs Native AOT); the island's own rest floor of about 0.3% of a core, off screen with Bluetooth off |
 | F132 Low-distraction mode | Done | Focus or low battery means dots | — |
 | F133 Full-screen apps | Done | Hides for full-screen apps unless a dot is due; hides in front of apps you choose | — |
 | F134 Presentation and game mode | Done (no real share yet) | Both modes; hidden from screen capture, checked with Windows' capture | A look at a real Teams or Meet share |

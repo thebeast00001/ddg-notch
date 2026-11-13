@@ -51,9 +51,12 @@ sealed class IslandController : IDisposable
     string? _policySent;
     PowerSnapshot? _lastPower;
     double _lastDeviceConnect = double.NegativeInfinity;
-    Timer? _resourceSampler;
+    Timer? _resourceSampler, _keyScanner;
+    KeyCheck? _keyCheck;
+    sealed record KeyCheck(KeyScan.Result Result, DateTime At, int Keys);
     TimeSpan _lastCpu;
     double _lastSampleAt;
+    long _lastBluetoothEvents;
     string? _lookApplied;
     bool _flowing;
 
@@ -130,6 +133,9 @@ sealed class IslandController : IDisposable
         SyncMirrors();   // after the island shows, so the mirrors show with it
         _win.RegisterHotkey();
         if (_flags.IsOn("diagnostics")) StartResourceSampler();
+        // F121: half a minute after starting, and once a day after that, every file Forty wrote is
+        // checked for key text, which is cut out if found. Off the UI thread; only counts are kept.
+        _keyScanner = new Timer(_ => Guard.Run(ScanForKeys, "key scan"), null, TimeSpan.FromSeconds(30), TimeSpan.FromDays(1));
         // Warm the surface once, out of sight, while nothing is showing.
         bool warmUp = Environment.GetEnvironmentVariable("FORTY_WARM") != "0";   // FORTY_WARM=0 is for measuring what the warm-up costs
         var warm = Timer(1200, () => { if (warmUp && Queue.View.Primary == null && !_expanded) _surface.Warm(); _ = HelloReadyAsync(); });
@@ -644,6 +650,7 @@ sealed class IslandController : IDisposable
             PacingLine(),
             $"Sources: {adapters}",
             crashes == 0 ? "No crash reports on this PC" : $"{crashes} crash report{(crashes == 1 ? "" : "s")} on this PC (no personal data in them)",
+            KeyCheckLine(),
         };
         return new SettingsModel(
             _music.LyricsOn, _music.ColoursOn, _flags.IsOn("bluetooth"), _flags.IsOn("audio-output"), _flags.IsOn("hide-from-capture"), _flags.IsOn("glass"),
@@ -963,10 +970,33 @@ sealed class IslandController : IDisposable
             double now = Clock.Now, cpu = (self.TotalProcessorTime - _lastCpu).TotalSeconds;
             Meter.Record("cpu.percent", cpu / Math.Max(1e-3, now - _lastSampleAt) * 100);
             Meter.Record("memory.mb", self.PrivateMemorySize64 / 1048576.0);
+            long events = Bluetooth.Events;
+            Meter.Record("bluetooth.events", events - _lastBluetoothEvents);
+            _lastBluetoothEvents = events;
             _lastCpu = self.TotalProcessorTime;
             _lastSampleAt = now;
         }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
     }
+
+    /// <summary>F121: searches Forty's folder for the stored keys' text (never the encrypted key file itself).</summary>
+    void ScanForKeys()
+    {
+        var keys = _keys.Names.Select(_keys.Get).OfType<string>().ToList();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        var result = KeyScan.Run(App.Home, keys, new[] { "keys.bin" });
+        _keyCheck = new KeyCheck(result, DateTime.Now, keys.Count);
+        Meter.Record("keys.scan.ms", System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+        Meter.Record("keys.found", result.Cleaned.Count);
+    }
+
+    /// <summary>The key check's last result in words, for Settings › Diagnostics.</summary>
+    string KeyCheckLine() => _keyCheck switch
+    {
+        null => "Key check runs half a minute after start",
+        { Keys: 0 } => "Key check: no keys stored, so nothing to look for",
+        { Result.Cleaned.Count: 0 } c => $"Key check at {c.At:HH:mm}: no key text in the {c.Result.Files} files Forty wrote",
+        var c => $"Key check at {c.At:HH:mm}: key text found and removed from {string.Join(", ", c.Result.Cleaned)}",
+    };
 
     /// <summary>Turns the Glass look on or off; returns whether Windows allows it right now.</summary>
     public bool SetGlass(bool on) => _body.SetGlass(on);
@@ -983,6 +1013,8 @@ sealed class IslandController : IDisposable
     public void DemoCommand(string command) => OnCommand(command);
     public void DemoScrollSettings() => _surface.ScrollSettingsToEnd();
     public void DemoSpeech(string line) => OnSpeech(_speech.Apply(line, Clock.Now));
+    /// <summary>For the layout check: holds the satellite part-way out of the capsule (F5); 1 puts it at rest.</summary>
+    public void DemoPoseSplit(double split) { _body.Satellite.Set(Body.SatelliteSize); _body.Split.Set(split); }
     public void DemoDisplaysChanged() => PlaceOnDisplay();
     public void DemoContrast(bool? on) { _demoContrast = on; ApplyLook(); }
     public void DemoMove() => _ = MoveTo(Microsoft.UI.Windowing.DisplayArea.Primary);
@@ -1015,6 +1047,7 @@ sealed class IslandController : IDisposable
     public void Dispose()
     {
         _resourceSampler?.Dispose();
+        _keyScanner?.Dispose();
         foreach (var adapter in Adapters) adapter.Dispose();
         _flags.Dispose();
         _win.Dispose();

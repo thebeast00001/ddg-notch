@@ -144,6 +144,32 @@ sealed class Body
     }
 
     /// <summary>
+    /// Clips in the shapes of the liquid bridge's neck and of the satellite (F5), for layers that flow
+    /// out of the capsule with the drop. The neck clip shares the bridge's own morphing path, so the two
+    /// can never disagree.
+    /// </summary>
+    public (CompositionGeometricClip Neck, CompositionGeometricClip Drop) CreateDropClips()
+    {
+        var c = _win.Compositor;
+        var neck = c.CreateGeometricClip(_bridge);
+        Bind(neck, "Offset", "Vector2(layout.hostW * 0.5 + w.v * 0.5, top.v + layout.inset + h.v * 0.5)");
+        Bind(neck, "Scale", "Vector2(sat.v / " + F(SatelliteSize) + ", sat.v / " + F(SatelliteSize) + ")");
+        var drop = c.CreateEllipseGeometry();
+        Bind(drop, "Center", "Vector2(layout.hostW * 0.5 + w.v * 0.5 - sat.v * 0.5 + (layout.gap + sat.v) * split.v, top.v + layout.inset + h.v * 0.5)");
+        Bind(drop, "Radius", "Vector2(Max(sat.v * 0.5, 0.01), Max(sat.v * 0.5, 0.01))");
+        return (neck, c.CreateGeometricClip(drop));
+    }
+
+    /// <summary>The body's fill (the tint, or Ink), for layers that must reproduce the body exactly.</summary>
+    public CompositionColorBrush Fill => _fill;
+
+    /// <summary>
+    /// How much the drop is still part of the capsule (F5): 1 while it pulls out and the neck holds, 0 once
+    /// it has separated (or when there is no satellite). An expression over "split" and "sat".
+    /// </summary>
+    public const string Joined = "Clamp(1 - (split.v - 0.6) / 0.35, 0, 1) * Clamp(sat.v * 0.5, 0, 1)";
+
+    /// <summary>
     /// Tints the body (a song's colour) or returns it to Ink. The colour crosses over in 0.7 s, so a new
     /// song's mood arrives rather than switches.
     /// </summary>

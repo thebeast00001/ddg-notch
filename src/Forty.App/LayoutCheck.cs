@@ -43,6 +43,14 @@ static class LayoutCheck
         await Measure("question with buttons", island, report, outDir);
         island.DemoSpeech("recording Teams");
         await Measure("recording beside music", island, report, outDir);
+        // F5: the drop held part-way out of the capsule, so the neck's colour can be checked frame by frame.
+        foreach (double split in new[] { 0.2, 0.4, 0.6, 0.8 })
+        {
+            island.DemoPoseSplit(split);
+            await Task.Delay(300);
+            await Capture($"drop {split:0.0}", outDir, report);
+        }
+        island.DemoPoseSplit(1);
 
         island.DemoExpand();
         await Measure("music panel with recording", island, report, outDir);
@@ -88,13 +96,16 @@ static class LayoutCheck
             string where = $"layout y {layoutAt.Y:0.0}, moved {probe.Ink.Translation.Y:0.0}, size {probe.Ink.ActualWidth:0.0} × {probe.Ink.ActualHeight:0.0}";
             report.Add($"  {probe.Name}: {(probe.Both ? $"dx {dx,5:+0.0;-0.0;0.0}  " : "")}dy {dy,5:+0.0;-0.0;0.0}{body}   (ink {box.Width:0.0} × {box.Height:0.0} at {at.X + box.X:0.0},{at.Y + box.Y:0.0} in a {probe.Box.ActualWidth:0} × {probe.Box.ActualHeight:0} box; {where}){flag}");
         }
-        // The island as the compositor draws it (body, glows, blur and all), from its own window only.
+        await Capture(state, outDir, report);
+    }
+
+    /// <summary>The island as the compositor draws it (body, glows, blur and all), from its own window only.</summary>
+    static async Task Capture(string state, string outDir, List<string> report)
+    {
         string name = state.Replace(' ', '-').Replace(",", "");
-        if (_win != null)
-        {
-            var top = new Windows.Graphics.RectInt32(0, 0, _win.WindowPx.Width, (int)(Math.Min(_win.HeightDip, 420) * _win.Scale));
-            if (!await Demo.SaveWindowAsync(_win, top, Path.Combine(outDir, $"window-{name}.png"))) report.Add("  (window picture not captured)");
-        }
+        if (_win == null) return;
+        var top = new Windows.Graphics.RectInt32(0, 0, _win.WindowPx.Width, (int)(Math.Min(_win.HeightDip, 420) * _win.Scale));
+        if (!await Demo.SaveWindowAsync(_win, top, Path.Combine(outDir, $"window-{name}.png"))) report.Add($"  ({state}: window picture not captured)");
     }
 
     /// <summary>Where an element's visible pixels are, in its own DIPs, or null if it draws nothing.</summary>
