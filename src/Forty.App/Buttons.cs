@@ -320,13 +320,17 @@ sealed class PlayPauseGlyph
         dip.SetReferenceParameter("p", _p.Props);
         group.StartAnimation("Scale", dip);
 
-        var device = Microsoft.Graphics.Canvas.CanvasDevice.GetSharedDevice();
         var linear = c.CreateLinearEasingFunction();
         for (int piece = 0; piece < 2; piece++)
         {
             var geometry = c.CreatePathGeometry();
             var morph = c.CreatePathKeyFrameAnimation();
-            for (int i = 0; i <= Steps; i++) morph.InsertKeyFrame(i / (float)Steps, Shape(device, piece, i / (double)Steps), linear);
+            int which = piece;
+            PathMaker.Use(device =>
+            {
+                for (int i = 0; i <= Steps; i++) morph.InsertKeyFrame(i / (float)Steps, Shape(device, which, i / (double)Steps), linear);
+                return 0;
+            });
             morph.Duration = TimeSpan.FromSeconds(1);
             geometry.StartAnimation("Path", morph);
             var controller = geometry.TryGetAnimationController("Path");

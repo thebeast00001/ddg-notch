@@ -48,7 +48,7 @@ sealed class IslandWindow : IDisposable
     /// <summary>Rows at the top of the window that sit above the monitor and are never shown.
     /// Windows draws a one-pixel frame line along the top of a frame-extended window otherwise.</summary>
     public const int TopInsetPx = 2;
-    const int HotkeyId = 0x4F01;
+    const int HotkeyId = 0x4F01, PauseHotkeyId = 0x4F02;
 
     static readonly IntPtr HwndTopmost = new(-1), HwndNotTopmost = new(-2);
     const uint Quiet = Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE;
@@ -74,6 +74,13 @@ sealed class IslandWindow : IDisposable
 
     /// <summary>The global shortcut was pressed (F6).</summary>
     public event Action? Hotkey;
+
+    /// <summary>The emergency pause shortcut was pressed (F125).</summary>
+    public event Action? PauseHotkey;
+
+    /// <summary>Registers Ctrl+Alt+Shift+Space for "pause everything" (F125). False if another app holds it.</summary>
+    public bool RegisterPauseHotkey() =>
+        Native.RegisterHotKey(Hwnd, PauseHotkeyId, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_SHIFT | Native.MOD_NOREPEAT, Native.VK_SPACE);
 
     /// <summary>A display was added, removed or rescaled (F7).</summary>
     public event Action? DisplaysChanged;
@@ -163,6 +170,7 @@ sealed class IslandWindow : IDisposable
     IntPtr WindowMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, UIntPtr id, UIntPtr refData)
     {
         if (msg == Native.WM_HOTKEY && wParam.ToInt32() == HotkeyId) Hotkey?.Invoke();
+        else if (msg == Native.WM_HOTKEY && wParam.ToInt32() == PauseHotkeyId) PauseHotkey?.Invoke();
         else if (msg is Native.WM_DISPLAYCHANGE or Native.WM_DPICHANGED) DisplaysChanged?.Invoke();
         else if (msg == Native.WM_SETTINGCHANGE && wParam.ToInt64() == Native.SPI_SETWORKAREA) DisplaysChanged?.Invoke();   // a taskbar moved
         else if (msg is Native.WM_SETTINGCHANGE or Native.WM_THEMECHANGED or Native.WM_SYSCOLORCHANGE) SettingsChanged?.Invoke();

@@ -68,6 +68,18 @@ public sealed class SecretStore
         }
     }
 
+    static byte[] Transform(byte[] data, bool protect) => Dpapi.Transform(data, protect, "Forty service keys");
+}
+
+/// <summary>
+/// Windows' data protection for the current account (DPAPI): what it encrypts can be read back only by
+/// the same Windows user on this PC. The keys file and the memory file use it.
+/// </summary>
+public static class Dpapi
+{
+    public static byte[] Protect(byte[] data) => Transform(data, protect: true, "Forty");
+    public static byte[] Unprotect(byte[] data) => Transform(data, protect: false, "Forty");
+
     [StructLayout(LayoutKind.Sequential)] struct Blob { public int Size; public IntPtr Data; }
     [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool CryptProtectData(ref Blob input, string? description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
@@ -75,15 +87,15 @@ public sealed class SecretStore
     static extern bool CryptUnprotectData(ref Blob input, IntPtr description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
 
-    static byte[] Transform(byte[] data, bool protect)
+    public static byte[] Transform(byte[] data, bool protect, string description)
     {
         var pinned = GCHandle.Alloc(data, GCHandleType.Pinned);
         try
         {
             var input = new Blob { Size = data.Length, Data = pinned.AddrOfPinnedObject() };
-            bool ok = protect ? CryptProtectData(ref input, "Forty service keys", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, out var output)
+            bool ok = protect ? CryptProtectData(ref input, description, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, out var output)
                               : CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, out output);
-            if (!ok) throw new InvalidOperationException("Windows could not " + (protect ? "encrypt" : "decrypt") + " the keys file.");
+            if (!ok) throw new InvalidOperationException("Windows could not " + (protect ? "encrypt" : "decrypt") + " the data.");
             try
             {
                 var result = new byte[output.Size];

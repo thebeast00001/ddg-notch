@@ -40,8 +40,12 @@ public sealed record Activity(
     TimeSpan? Lifetime,
     Accent Accent = Accent.None,
     Sense? Mark = null,
-    ActivityActions? Actions = null)
+    ActivityActions? Actions = null,
+    string? AgentId = null)
 {
+    /// <summary>The agent this belongs to, whose face shows in the capsule's leading slot while it works (phase 2).</summary>
+    public Agent? Agent => Cast.ById(AgentId);
+
     /// <summary>A mark that stays out of the capsule: it shows as the dot, or as the satellite beside something else.</summary>
     public bool QuietMark => Mark != null && Priority >= Priority.Ambient;
 
@@ -72,7 +76,8 @@ public enum Accent { None, Done, NeedsYou, Error, Recording }
 public enum Sense { Call, Microphone, Screen, WakeWord }
 
 /// <summary>Buttons an activity offers. Commands are sent back to whoever posted it.</summary>
-public sealed record ActivityActions(string Label, string Command, string? SecondLabel = null, string? SecondCommand = null);
+public sealed record ActivityActions(string Label, string Command, string? SecondLabel = null, string? SecondCommand = null,
+                                     string? ThirdLabel = null, string? ThirdCommand = null);
 
 /// <summary>Modes decide which priorities may show, and as what (ROADMAP.md 2.1).</summary>
 public enum Mode { Normal, Focus, Meeting, Presenting, Gaming }

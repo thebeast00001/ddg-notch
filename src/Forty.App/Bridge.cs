@@ -43,10 +43,13 @@ static class Bridge
     public static void Bind(CompositionPathGeometry geometry, double a, double b, double gap, CompositionPropertySet split)
     {
         var c = geometry.Compositor;
-        var device = CanvasDevice.GetSharedDevice();
         var animation = c.CreatePathKeyFrameAnimation();
         var linear = c.CreateLinearEasingFunction();
-        for (int i = 0; i <= Steps; i++) animation.InsertKeyFrame(i / (float)Steps, Path(device, a, b, gap, i / (double)Steps), linear);
+        PathMaker.Use(device =>
+        {
+            for (int i = 0; i <= Steps; i++) animation.InsertKeyFrame(i / (float)Steps, Path(device, a, b, gap, i / (double)Steps), linear);
+            return 0;
+        });
         animation.Duration = TimeSpan.FromSeconds(1);
         geometry.StartAnimation("Path", animation);
         var controller = geometry.TryGetAnimationController("Path");

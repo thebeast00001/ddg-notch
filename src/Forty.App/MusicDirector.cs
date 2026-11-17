@@ -27,6 +27,9 @@ sealed class MusicDirector
     public ImageSource? ArtLarge { get; private set; }
     public TrackColours Colours { get; private set; } = TrackColours.Ink;
     public int LineIndex { get; private set; } = -1;
+
+    /// <summary>The song's synced lyrics, for the panel's lyric column.</summary>
+    public IReadOnlyList<LyricLine> Lines => _lines;
     public string LyricsNote { get; private set; } = "";
 
     /// <summary>The track, its art, its colours or its lyrics changed: re-render everything about it.</summary>

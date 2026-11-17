@@ -8,28 +8,41 @@ namespace Forty.Core;
 /// </summary>
 public enum AgentState { Idle, Listening, Working, UsingTool, WaitingForApproval, NeedsInput, Done, Paused, Failed, Speaking }
 
-/// <summary>The outline an agent is drawn with: six or fewer shapes, readable at 16 DIPs.</summary>
-public enum Silhouette { Stroke, Ring, Bars, Square }
+/// <summary>
+/// The shape of a character's eyes, which is most of its face: two eyes, in its hue, that blink, look,
+/// squint, widen, smile and droop. Each cast member's eyes are their own, so a face is recognisable
+/// in greyscale at 16 DIPs.
+/// </summary>
+public enum Eyes { Round, Tall, Square, Wide }
 
 /// <summary>
-/// One agent's identity (F13): its name, its job, its silhouette, its hue and how it moves while it
-/// works. These stay the same across sessions and updates; the name can be changed, the role never
-/// changes without you.
+/// One agent's identity (F13): its name, its job, its eyes, its hue and its manner while it works.
+/// These stay the same across sessions and updates; the name can be changed, the role never changes
+/// without you. <see cref="Id"/> is the role and never changes, so history and settings survive a rename.
 /// </summary>
-public sealed record Agent(string Id, string Name, string Job, Silhouette Silhouette, Argb Hue, string WorkingMotion);
+public sealed record Agent(string Id, string Name, string Job, Eyes Eyes, Argb Hue, string Manner, string[] AlsoCalled);
 
-/// <summary>The cast (ROADMAP 2.3). Planner arrives in phase 3 with the calendar; it is defined so its look can be checked now.</summary>
+/// <summary>
+/// The cast. Forty, the island itself, is the host: its white eyes rest on the island when nothing is
+/// happening. The agents step in only while they work, each with a face of its own.
+/// </summary>
 public static class Cast
 {
-    public static readonly Agent Scribe = new("scribe", "Scribe", "Words: dictation, calls, notes", Silhouette.Stroke, new Argb(255, 0x6A, 0xA8, 0xFF), "The stroke draws itself left to right");
-    public static readonly Agent Scout = new("scout", "Scout", "Finding: questions, search, files, memory", Silhouette.Ring, new Argb(255, 0x45, 0xD6, 0xCF), "The ring sweeps a quarter turn and back");
-    public static readonly Agent Operator = new("operator", "Operator", "Doing: apps, windows, media, settings", Silhouette.Square, new Argb(255, 0xFF, 0x8F, 0xA3), "The square turns 90° and settles");
-    public static readonly Agent Planner = new("planner", "Planner", "Time: calendar, brief, follow-ups", Silhouette.Bars, new Argb(255, 0xB3, 0x94, 0xFF), "The bars trade places");
+    public static readonly Agent Echo = new("scribe", "Echo", "Words: dictation, calls, notes", Eyes.Round, new Argb(255, 0x6A, 0xA8, 0xFF),
+        "Listens with wide round eyes; while writing, its eyes follow the words left to right", new[] { "Scribe" });
+    public static readonly Agent Iris = new("scout", "Iris", "Finding: questions, search, files, memory", Eyes.Tall, new Argb(255, 0x45, 0xD6, 0xCF),
+        "Tall, curious eyes that look around while searching", new[] { "Scout" });
+    public static readonly Agent Bolt = new("operator", "Bolt", "Doing: apps, windows, media, settings", Eyes.Square, new Argb(255, 0xFF, 0x8F, 0xA3),
+        "Square, determined eyes that narrow and get to it", new[] { "Operator" });
+    public static readonly Agent Tempo = new("planner", "Tempo", "Time: timers, calendar, brief, follow-ups", Eyes.Wide, new Argb(255, 0xB3, 0x94, 0xFF),
+        "Calm, wide eyes that drift up while thinking ahead", new[] { "Planner" });
 
     /// <summary>The agents that have a working job in phase 2 ("no agent without a working job").</summary>
-    public static IReadOnlyList<Agent> Working => new[] { Scribe, Scout, Operator };
+    public static IReadOnlyList<Agent> Working => new[] { Echo, Iris, Bolt, Tempo };
 
-    public static IReadOnlyList<Agent> All => new[] { Scribe, Scout, Operator, Planner };
+    public static IReadOnlyList<Agent> All => new[] { Echo, Iris, Bolt, Tempo };
+
+    public static Agent? ById(string? id) => All.FirstOrDefault(a => a.Id == id);
 }
 
 /// <summary>
@@ -79,13 +92,19 @@ public sealed class AgentRun
     /// <summary>The run ended without anything to show (cancelled, or nothing was said).</summary>
     public void End() { Progress = null; Level = 0; Go(AgentState.Idle, null); }
 
-    /// <summary>Everything pauses where it is (F125); only Resume, End or Fail moves it on.</summary>
-    public void Pause()
+    /// <summary>
+    /// Everything pauses where it is (F125); only Resume, End or Fail moves it on. <paramref name="evenIdle"/>
+    /// is the emergency pause: an idle agent shows Paused too, and starts nothing until resumed.
+    /// </summary>
+    public void Pause(bool evenIdle = false)
     {
-        if (_state is AgentState.Paused or AgentState.Idle or AgentState.Done) return;
-        _beforePause = _state;
+        if (_state == AgentState.Paused) return;
+        if (_state is AgentState.Idle or AgentState.Done && !evenIdle) return;
+        _beforePause = _state is AgentState.Done ? AgentState.Idle : _state;
         Go(AgentState.Paused, Detail, keepWhilePaused: true);
     }
+
+    public bool IsPaused => _state == AgentState.Paused;
 
     public void Resume()
     {
@@ -175,7 +194,7 @@ public sealed class Roster
         int space = line.IndexOf(' ');
         string kind = (space < 0 ? line : line[..space]).ToLowerInvariant();
         string arg = space < 0 ? "" : line[(space + 1)..].Trim();
-        var scribe = this[Cast.Scribe];
+        var scribe = this[Cast.Echo];
         switch (kind)
         {
             case "listening": scribe.Listen(); break;

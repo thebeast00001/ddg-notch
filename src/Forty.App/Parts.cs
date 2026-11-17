@@ -144,48 +144,64 @@ sealed class Part
 }
 
 /// <summary>
-/// The microphone's level while you dictate: four bars that follow your voice. Each new level eases
-/// the bars there in 90 ms, so 20 readings a second read as one continuous movement; the middle bars
-/// reach furthest, so even a steady voice has a shape. Nothing moves between readings.
+/// The microphone's level while you listen: a matrix of dots, 3 high and 9 across, like a small LED
+/// display. Each reading becomes a column at the right that lights from the bottom up (one dot for a
+/// whisper, three for a raised voice), and earlier readings move left, so the last half-second of your
+/// voice is always on show. Unlit dots stay faintly visible, so the matrix has a shape even in silence.
+/// The dots are compositor shapes whose colours are set per reading: no layout, no animation running
+/// between readings.
 /// </summary>
-sealed class LevelMeter
+sealed class DotMatrix
 {
-    public StackPanel Root { get; }
-    readonly Border[] _bars = new Border[4];
-    readonly Compositor _compositor;
-    static readonly float[] Reach = { 0.55f, 1.0f, 0.8f, 0.45f };
+    const int Columns = 9, Rows = 3;
+    const float Dot = 3.4f, Pitch = 5.6f;
+    readonly CompositionColorBrush[,] _dots = new CompositionColorBrush[Columns, Rows];
+    readonly double[] _history = new double[Columns];
+    Windows.UI.Color _on = Palette.Primary;
 
-    public LevelMeter(Compositor compositor)
+    public Grid Root { get; }
+
+    public DotMatrix(Compositor c)
     {
-        _compositor = compositor;
-        Root = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2.5, Height = 16, VerticalAlignment = VerticalAlignment.Center };
-        for (int i = 0; i < _bars.Length; i++)
-        {
-            _bars[i] = new Border { Width = 3, Height = 16, CornerRadius = new CornerRadius(1.5), VerticalAlignment = VerticalAlignment.Center };
-            _bars[i].CenterPoint = new Vector3(1.5f, 8f, 0);
-            _bars[i].Scale = new Vector3(1, 0.2f, 1);
-            Root.Children.Add(_bars[i]);
-        }
-        SetColour(Palette.Primary);
+        Root = new Grid { Width = Columns * Pitch - (Pitch - Dot), Height = Rows * Pitch - (Pitch - Dot), VerticalAlignment = VerticalAlignment.Center };
+        var shapes = c.CreateShapeVisual();
+        shapes.Size = new Vector2((float)Root.Width, (float)Root.Height);
+        for (int x = 0; x < Columns; x++)
+            for (int y = 0; y < Rows; y++)
+            {
+                var dot = c.CreateEllipseGeometry();
+                dot.Radius = new Vector2(Dot / 2);
+                dot.Center = new Vector2(x * Pitch + Dot / 2, y * Pitch + Dot / 2);
+                var sprite = c.CreateSpriteShape(dot);
+                sprite.FillBrush = _dots[x, y] = c.CreateColorBrush();
+                shapes.Shapes.Add(sprite);
+            }
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetElementChildVisual(Root, shapes);
+        Paint();
     }
 
-    public void SetColour(Windows.UI.Color colour)
-    {
-        foreach (var bar in _bars) bar.Background = new SolidColorBrush(colour);
-    }
+    public void SetColour(Windows.UI.Color colour) { _on = colour; Paint(); }
 
+    /// <summary>Silence: every column dark.</summary>
+    public void Clear() { Array.Clear(_history); Paint(); }
+
+    /// <summary>A new reading (0 to 1) enters at the right; the rest move one column left.</summary>
     public void Set(double level)
     {
-        float l = (float)Math.Clamp(level, 0, 1);
-        for (int i = 0; i < _bars.Length; i++)
+        Array.Copy(_history, 1, _history, 0, Columns - 1);
+        _history[^1] = Math.Clamp(level, 0, 1);
+        Paint();
+    }
+
+    void Paint()
+    {
+        var off = Windows.UI.Color.FromArgb(56, _on.R, _on.G, _on.B);
+        for (int x = 0; x < Columns; x++)
         {
-            float height = 0.2f + 0.8f * l * Reach[i];
-            if (MotionPolicy.Reduced) { _bars[i].Scale = new Vector3(1, height, 1); continue; }
-            var animation = _compositor.CreateVector3KeyFrameAnimation();
-            animation.InsertKeyFrame(1f, new Vector3(1, height, 1), _compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.8f), new Vector2(0.3f, 1f)));
-            animation.Duration = TimeSpan.FromMilliseconds(90);
-            animation.Target = "Scale";
-            _bars[i].StartAnimation(animation);
+            double l = _history[x];
+            int lit = l < 0.06 ? 0 : l < 0.3 ? 1 : l < 0.6 ? 2 : 3;
+            for (int y = 0; y < Rows; y++)
+                _dots[x, y].Color = Rows - 1 - y < lit ? _on : off;   // bottom up
         }
     }
 }

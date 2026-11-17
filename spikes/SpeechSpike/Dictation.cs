@@ -26,11 +26,18 @@ sealed class Dictation
     public bool IslandConnected => _island.Connected;
     public void Greet()
     {
-        _island.Received += line => { if (line == "state?") _island.Send(_listening ? "listening" : "idle"); };
+        _island.Received += line =>
+        {
+            if (line == "state?") _island.Send(_listening ? "listening" : "idle");
+            // Echo's page on the island: with dictation or the microphone switched off there, the key does nothing.
+            else if (line == "mic off") _micAllowed = false;
+            else if (line == "mic on") _micAllowed = true;
+        };
         _island.Send("idle");
     }
 
     volatile bool _listening;   // the microphone is open
+    volatile bool _micAllowed = true;   // the island's say: Echo's microphone switch
 
     public Dictation(string language, ISpeechEngine? engine, IStreamingEngine? streaming, string key)
     {
@@ -53,6 +60,7 @@ sealed class Dictation
         bool talk = vkey == _talkKey && (right == _talkKeyIsRight || _talkKey == 0x78);
         if (talk)
         {
+            if (down && !_held && !_micAllowed) { _held = true; _island.Send("mic-off"); return; }   // never opened (once per press): the island says why
             if (down && !_held && (_worker == null || !_worker.IsAlive))
             {
                 _held = true;
@@ -132,6 +140,17 @@ sealed class Dictation
                 return;
             }
 
+            // "Hey Forty, …" is a request for Forty, not text to type: it goes to the island, which works
+            // out what was asked. Without the island there is nobody to ask, so it is typed as usual.
+            if (_island.Connected && AskForty(text) is { } request)
+            {
+                _island.Send("ask " + request);
+                _island.Send("idle");
+                Console.WriteLine(string.Create(inv, $"  {clip.Seconds:F1} s of audio -> asked Forty in {heardMs:F0} ms") + AnsweredBy());
+                Console.WriteLine("  " + request);
+                return;
+            }
+
             int typed = TextTyper.Type(text + " ");
             _island.Send(typed > 0 ? "done" : "failed");
             double totalMs = Stopwatch.GetElapsedTime(keyUp).TotalMilliseconds;
@@ -151,6 +170,23 @@ sealed class Dictation
         {
             connecting?.ContinueWith(t => { if (t.IsCompletedSuccessfully) t.Result.Dispose(); });
         }
+    }
+
+    static readonly System.Text.RegularExpressions.Regex HeyForty = new(
+        @"^\s*(?:hey|hi|ok|okay)[\s,]+(?:forty|fourty|40)\b[\s,.:;!?-]*(?<rest>.*)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+
+    /// <summary>
+    /// The request after "Hey Forty" (or "OK Forty"), on one line, or null for ordinary dictation. Both
+    /// words are needed, so a sentence that merely starts with "Forty" is still typed. The same rule,
+    /// with its tests, is Forty.Core's VoiceRequest.
+    /// </summary>
+    internal static string? AskForty(string text)
+    {
+        var m = HeyForty.Match(text);
+        if (!m.Success) return null;
+        string rest = System.Text.RegularExpressions.Regex.Replace(m.Groups["rest"].Value, @"\s+", " ").Trim();
+        return rest.Length == 0 ? null : rest.Length <= 500 ? rest : rest[..500];
     }
 
     /// <summary>For a routed engine: which service answered, and what went wrong on the way if anything did.</summary>

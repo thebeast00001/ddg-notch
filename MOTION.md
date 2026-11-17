@@ -210,7 +210,9 @@ Tracking tightens as text grows and loosens as it shrinks; there is no single va
 
 ## 9. The companion
 
-**Form is open.** Constraints for the design: built from six or fewer simple shapes so it can be drawn and animated by the compositor; readable at 20 × 20 DIPs; recognisable by silhouette and motion; not a human face, and not a cloud or a pair of sleepy eyes, which Airlock and Nusa already use. A starting concept to prototype: a single soft drop of light that squashes when it listens, circles when it works and resolves into a check when done.
+**Form: eyes (decided 17 November, by you).** The earlier rule ("not a pair of eyes") is replaced: the island and every agent are faces made of two eyes, because you asked for characters with expressions. Our own design, our own code: each character's eyes have their own shape, and expressions are spring targets (section 14g).
+
+The table below shows the meaning of each state; section 14g shows how a face expresses it.
 
 **States.** The same nine names are used in the animation, the run log and the screen-reader label, so the face can never say "done" while work continues.
 
@@ -226,13 +228,13 @@ Tracking tightens as text grows and loosens as it shrinks; there is no single va
 | Paused | Dimmed, pause glyph | Grey | "Paused" | — |
 | Failed | A cross draws once; the reason is one line of text | Red | "Couldn't finish" and the reason | Low note |
 
-Idle motion is always a reaction to you, never a timer, which keeps the "zero frames at rest" budget true. In battery saver the companion does not react at idle at all. No pulsing halos, no radar rings, no breathing loops.
+Idle motion is a reaction to you, with one exception: a blink, now and then, while Forty is awake. Blinks stop when you're away (Forty sleeps), in battery saver and with reduced motion. No pulsing halos, no radar rings, no breathing loops.
 
 ---
 
 ## 10. Sound and haptics
 
-- Five sounds: listen start, listen stop, needs you, done, timer alarm. All but the alarm are under 150 ms.
+- Five sounds: listen start, listen stop, needs you, done, timer alarm. All but the alarm are under 150 ms. The timer adds two of its own (14i): the ruler's tick and the start chime, both under the one "Ticks and chime" switch. The alarm always sounds.
 - A sound is triggered by the same event that starts its animation, so they land together.
 - The listen-start tick matters most: it tells you the microphone is live without looking.
 - Sounds follow system mute and Focus, have one switch and one level, and are never the only signal.
@@ -472,6 +474,138 @@ The full review is in docs/transitions.md.
 - **Badges:** ringed in the body's colour so they sit apart from the silhouette. They pop in on `pop` and leave at once.
 - **Reduced motion:** nothing loops, every pose is reached in one step, and the check and cross appear whole.
 - **Lifetime rule (learned the hard way):** a mark owns the springs its shapes follow. If the mark object is collected while its shapes are still on screen, the expressions stop and every hidden layer shows at full opacity. Marks are always held (the roster keeps them for the island's life).
+
+## 14f. Asking and answering (13 November)
+
+- **The ask field:** a 34 DIP pill plate at 9% white, brightening to 14% when focused (120 ms), with a search glyph and the hint "Ask Forty. Try “open Notepad”". WinUI's own text-box chrome is all transparent; the plate is the only chrome.
+- **Keyboard:** the shortcut opens the panel with the cursor in the field. Enter asks. The first Esc clears what was typed, and the next closes the panel. When the panel is rebuilt while you're typing, the cursor stays in the field.
+- **The answer:** under the field, like a reply.
+  - **Layout:** a glyph in the accent colour, the title in 13.5 semibold, and a sentence in secondary.
+  - **Buttons:** up to three, 28 tall: the first filled, the others soft.
+  - **Narrator:** questions are announced assertively, everything else politely.
+- **After an app opens:** like Spotlight, the panel closes and doesn't hand focus back, so the new app keeps it. "Opened Notepad" shows in the capsule for 2.5 s with a green check.
+- **Pause:** every mark dims with a pause badge, the answer reads "Everything paused" with Resume, and the footer's "Pause all" becomes "Resume".
+
+## 14g. Forty and the cast: faces (17 November)
+
+**The characters.** Each face is two eyes in a 24 × 24 box, drawn by the compositor.
+
+| Who | Job | Eyes | Hue | Manner while working |
+| --- | --- | --- | --- | --- |
+| **Forty** | The island itself; on show when nothing else is | Two tall soft capsules | White | — |
+| **Echo** (was Scribe) | Words: dictation, calls, notes | Round | Blue `#6AA8FF` | Its eyes read left to right |
+| **Iris** (was Scout) | Finding: questions, search, files | Tall, tilted in | Teal `#45D6CF` | Looks around |
+| **Bolt** (was Operator) | Doing: apps, media, settings | Square | Coral `#FF8FA3` | Narrows its eyes and nods into it |
+| **Tempo** (was Planner, phase 3) | Time: calendar, brief | Wide | Violet `#B394FF` | Drifts up, thinking ahead |
+
+The old role names still work when you address an agent ("Operator, open Spotify" reaches Bolt). The role (`Id`) never changes, so history survives a rename.
+
+**Expressions are spring targets.**
+- **Eye springs:** width, height, position, tilt and a "smile" amount per eye.
+- **Shared springs:** the gaze and the mouth.
+- **Morphing:** any expression interrupts any other and the eyes morph to it: pose response 0.26, damping 0.92; smiles on a livelier spring (damping 0.78, response 0.30).
+
+| Expression | Eyes |
+| --- | --- |
+| Neutral | Base shape |
+| Perk | 8% wider, 12% taller, lifted (you came close) |
+| Happy | Squash away into arcs (∩) of the same width |
+| Surprised | 30% wider, rounder, lifted |
+| Focused | Half height, lowered |
+| Determined | 62% height, tilted inward like a frown |
+| Sleepy | A quarter height, lowered |
+| Asleep | Lines, lowered; a "z" drifts in |
+| Sad | 80% height, outer corners drooping 13° |
+| Curious | One eye squints, the other widens; looks up and right |
+| Thinking | Looks up and right |
+| Listening | Wider; opens with your voice (up to 22% taller) |
+| Speaking | A mouth line under the eyes, its length following the voice |
+
+**Gaze and blinking.**
+- **Gaze:** the eyes move together, 2.2 units across and 1.6 up or down at most, on a quick critically damped spring (0.16).
+- **The blink:** a fixed 200 ms gesture: the lids fall in 50 ms, hold 30 ms and lift in 120 ms.
+  - **How often:** every 2.6 to 6.2 s, and two in a row about one time in five.
+  - **Why keyframes, not a spring:** a spring would keep its clock running for seconds after each blink, so the island would never stop drawing.
+
+**Forty at rest.** The face replaces the empty black pill.
+- **Pointer:** when you come close it perks up, and its eyes follow your pointer while you hover.
+- **Reactions:** something finished leaves the island and Forty smiles for 1.6 s; something failed and it droops.
+- **Sleep:** after 2.5 minutes with no keyboard or pointer input anywhere (checked every 2 s, which costs nothing), it grows sleepy, then sleeps. Its eyes close to lines, a "z" drifts in, and nothing moves: no frames are drawn.
+- **Waking:** your first input wakes it with a small start and a double blink.
+- **Where it doesn't show:** never in the sliver over a maximised window, never while the panel is open. In battery saver it shows but doesn't blink.
+
+**Agents appear when needed.** The roster strip is gone. An agent's face shows only:
+- **In the capsule while it works.** Dictation is Echo's: its face, then "Listening…", the microphone's red mark (always shown while the microphone is on, F116), and the dot-matrix meter.
+- **Beside its answer under the ask field.** For example, Bolt's happy eyes beside "Opened Notepad".
+
+**The dot-matrix meter.**
+- **Layout:** 3 rows by 9 columns of 3.4 DIP dots, 5.6 DIP apart.
+- **Behaviour:** each reading is a column at the right, lit from the bottom up: one dot for a whisper, three for a raised voice. Earlier readings step left. Unlit dots stay at 22%.
+- **Cost:** colours are set per reading; nothing animates between readings.
+
+**Music with lyrics beside it.** With Lyrics on and synced lyrics found, the panel widens to 520 DIP.
+- **Player (left):** 64 DIP cover, title, a progress row, and transport from 38 to 46 DIP, with the Lyrics and Colours toggles at its ends.
+- **Divider:** a hairline.
+- **Lyrics (right):** a 214 DIP column of 15 DIP semibold lines.
+- **Brightness:** the line being sung is full white; the others are 42%, 26% and 16% by distance, easing over 280 ms.
+- **Scrolling:** the column glides on `stream` so the current line sits a third of the way down, and lines fade where they meet the column's top and bottom edges.
+- **Background:** the album's own colours, which already fill the body at any size.
+
+## 14h. Thinking and answering (17 November)
+
+- **Thinking:** under the ask field, Forty's face at 22 DIPs looks up and to the right, beside "Thinking…". It shows from the moment the request leaves until the model answers (0.3 s typically), and is replaced in place by the answer.
+- **An answer:** the answering agent's face, then its name in 13.5 semibold.
+  - **The words:** 13 DIP at 88% white on an 18 DIP line height, so a two-sentence answer reads as text, not a note.
+  - **Where it came from:** in 10.5 tertiary, for example "Sarvam · cloud · 0.3 s".
+- **When the panel is closed:** an answer or a failure opens it without taking the keyboard, and closes it once there has been time to read (9 to 32 s, by length). Moving the pointer into it, or a question waiting for you, keeps it open.
+- **The hint:** the ask field reads "Ask Forty anything" when a model is connected and "Ask Forty. Try “open Notepad”" when only the built-in commands work.
+
+## 14i. The timer and the mirror (17 November)
+
+**The timer is Tempo's.** It uses Tempo's violet (#B394FF), not Apple's orange, which sits too close to the amber reserved for "needs you". In a contrast theme it becomes the highlight colour.
+
+- **Setting it:** a page like Settings, opened from the ask field's timer button, by typing or saying "set a timer", or with a length ("set a timer for 25 minutes" starts it at once).
+  - **Digits:** 58 DIP Segoe UI Variable Display Light, tabular, with the end time under them ("Ends at 4:32 PM").
+  - **Ruler:** a strip of minute ticks (1 to 180) under a fixed 3 × 32 DIP violet line. Ticks are 10 DIPs apart; every fifth is long and labelled. Ticks fade toward the edges, and those within 36 DIPs of the line grow up to 1.5 times taller, like a lens.
+  - **Start:** a full-width 40 DIP violet pill with dark text.
+- **The ruler's physics (`Forty.Motion.RulerMotion`):**
+  - **Drag:** it follows the pointer 1:1.
+  - **Ends:** past either end it gives with the rubber band (constant 0.55, up to 90 DIPs) and never stops dead.
+  - **Throw:** let go and the throw is projected (deceleration 0.998), snapped to the nearest whole minute, and carried there by a critically damped spring (response 0.32 s) that starts at the throw's own speed. It never swings back over a tick it already passed.
+  - **Click:** a click on a tick goes there.
+  - **Keys and wheel:** a wheel notch or an arrow key moves one minute, Page Up and Page Down five, Home and End to the ends. Quick presses add up.
+  - **One number:** the compositor draws every tick, label and the lens from a single property, so a frame costs one write.
+- **Each minute crossing the line:** a tick sound (12 ms, quiet, with a 0.1 ms attack so it stays a click) and the line's small give (1.25 × 1.12, back in 160 ms). Ticks are never closer than 28 ms apart, so a fast throw sounds like a soft ratchet, not a buzz.
+- **Rolling digits:** a digit that changes slides out and its replacement slides in, 0.55 of the digit's height, with a fade, in 320 ms on (0.2, 0.9, 0.3, 1). Digits roll up when the number grows and down as it counts down; unchanged digits stay still. The countdown in the capsule doesn't roll: it changes on the second, in place, so a long timer costs one frame a second.
+- **Running:** the capsule shows Tempo's face, "Timer" and the countdown in violet; Tempo's eyes perk for the last ten seconds and grow drowsy when paused.
+  - **Opening the island while it runs:** the timer card leads the panel with Tempo, the live countdown at 20 DIP and round Pause and Cancel buttons. Pressing Tempo's side opens the timer page.
+  - **On the timer page:** the countdown, a 4 DIP bar that drains on the compositor (one linear animation over the time left, nothing on our side while it moves), and Cancel, +1 min and Pause.
+- **Time's up:** the alarm, a gentle four-note figure made here, loops for up to a minute. Tempo's eyes go wide (Surprised), then happy. The capsule offers Stop and +1 min; if the island is open, the page becomes "Time's up" with the same two.
+- **The clock behind it** wakes on the second, when the digits change, and at the end; nothing runs in between. It uses the wall clock, so a timer set before the PC sleeps rings as soon as it wakes if its time has passed.
+
+**The mirror.** A page with your camera, flipped like a mirror, in a 376 × 236 DIP frame with 18 DIP corners (a composition clip, since the video draws in its own swap chain).
+
+- **The header:** a red dot and "Camera on" show only while frames are live.
+- **One line under it:** "Only you can see this. Nothing is saved or sent, and the camera turns off when you close it, or after 2 minutes."
+- **The camera runs only while the page shows.** Closing it, collapsing the island, opening another page, or two minutes passing releases it at once.
+- **It stays open when the pointer leaves,** so you can look without holding the mouse still. A click on the island or Esc closes it.
+- **If the camera can't be used:** "Camera access is off for desktop apps" with Open camera settings, "No camera found on this PC", or "Another app is using the camera" with Try again.
+- **It never takes the camera from another app.** A free camera is opened normally; one already in use (the call you're about to join) is watched alongside it.
+
+## 14j. Memory and the agents' pages (17 November)
+
+- **One frame for every page under Settings.** A back button, then the page's own face (an agent's, at 34 DIPs and blinking) or nothing, then the title in 17 semibold with a line under it in 11.5 tertiary. Below is a list that scrolls under the island's rounded edge.
+- **Direction follows the way you went.** Going to a page, its content fades in from 28 DIPs to the right. Coming back, the page you return to comes from 28 DIPs to the left. Opening straight from the capsule (a face, a card), the page grows with the body like Settings. The body changes height on the quick spring; nothing else moves.
+- **Faces in a list hold still.** The agents' rows in Settings show each face at 24 DIPs without blinking; only a page's own face is alive. Every face on a page stops and lets go when the page goes.
+- **Rows that open a page** are whole buttons: the face or glyph in a 26 DIP column, the name in 13, a line in 11 tertiary, and a chevron. The plate is quiet until hovered.
+- **A skill row** adds what it risks under its sentence: a 10 DIP glyph and 10.5 tertiary words (reads only, on this PC, uses the cloud, can delete).
+- **Interruption** is three chips, one filled. The sentence under them says what the chosen one does.
+- **A memory** is its sentence in 13, then where it came from in 11 tertiary, then your words in italics, then Edit and Forget as quiet text buttons.
+  - **Forget** turns the buttons into Forget (filled) and Keep, in place; nothing moves under you.
+  - **Edit** puts the sentence in a field like the ask field, text selected: Enter saves, Esc puts it back.
+  - **After forgetting,** a check and "Forgot “…” It's gone from this PC." lead the page until you leave it.
+- **The suggestion card** is a reply like any other: Bolt's face, "Remember this?", the sentence, and Yes, Edit and No. It comes 2.6 s after the work it is about, so it never lands on the result, and at most once an hour. The panel opens to show it without taking the keyboard, unless that agent is set to Quietly or Brief only.
+- **A refusal** (a skill or data source switched off) is one line with a lock glyph, "Turn on" filled and "Not now". Turning it on does what you asked.
 
 ## 14. Never
 

@@ -31,6 +31,7 @@ public sealed class SpeechSession
 {
     public const string DictationKey = "speech.dictation", CallKey = "speech.call", WakeKey = "speech.wake", ScreenKey = "speech.screen";
     const string Source = "speech";
+    static readonly string Echo = Cast.Echo.Id;   // dictation is Echo's work: its face shows while it listens and writes
 
     // Segoe Fluent Icons code points.
     public const string MicGlyph = "", RecordGlyph = "", WorkingGlyph = "", DoneGlyph = "",
@@ -78,15 +79,15 @@ public sealed class SpeechSession
             case "working":
                 _on.Remove(Sense.Microphone);
                 Confirmed();
-                return Post(Activity.Live(DictationKey, Source, Priority.Timely, "Writing it down", null, WorkingGlyph, "Writing down what you said"));
+                return Post(Activity.Live(DictationKey, Source, Priority.Timely, "Writing it down", null, WorkingGlyph, "Writing down what you said") with { AgentId = Echo });
             case "done":
                 _on.Remove(Sense.Microphone);
                 Confirmed();
-                return Post(new Activity(DictationKey, Source, Priority.Ambient, "Typed", null, DoneGlyph, "Typed where your cursor is", TimeSpan.FromSeconds(1.6), Accent.Done));
+                return Post(new Activity(DictationKey, Source, Priority.Ambient, "Typed", null, DoneGlyph, "Typed where your cursor is", TimeSpan.FromSeconds(1.6), Accent.Done, AgentId: Echo));
             case "failed":
                 _on.Remove(Sense.Microphone);
                 Confirmed();
-                return Post(new Activity(DictationKey, Source, Priority.Timely, "Couldn't type that", null, ErrorGlyph, "Dictation failed; nothing was typed", TimeSpan.FromSeconds(3), Accent.Error));
+                return Post(new Activity(DictationKey, Source, Priority.Timely, "Couldn't type that", null, ErrorGlyph, "Dictation failed; nothing was typed", TimeSpan.FromSeconds(3), Accent.Error, AgentId: Echo));
             case "idle":
                 _on.Remove(Sense.Microphone);
                 Confirmed();
@@ -164,7 +165,7 @@ public sealed class SpeechSession
     Activity Listening() => Unconfirmed
         ? new Activity(DictationKey, Source, Priority.ActNow, "Microphone may be on", null, MicGlyph,
             "The speech process stopped answering while the microphone was on. This stays until it confirms the microphone is off.", null, Accent.Recording, Sense.Microphone)
-        : new Activity(DictationKey, Source, Priority.ActNow, "Listening", null, MicGlyph, "Listening", null, Accent.Recording, Sense.Microphone);
+        : new Activity(DictationKey, Source, Priority.ActNow, "Listening…", null, MicGlyph, "Listening", null, Accent.Recording, Sense.Microphone, AgentId: Echo);
 
     Activity Recording() => Unconfirmed
         ? new Activity(CallKey, Source, Priority.Ambient, "Notes may still be recording", CallApp, RecordGlyph,

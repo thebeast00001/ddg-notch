@@ -13,7 +13,7 @@ namespace Forty.App;
 /// this class turns each decision into a morph of the body and a layered change of its content, and
 /// turns your pointer and keyboard into expand, collapse, hold and lean (MOTION.md 5 and 6).
 /// </summary>
-sealed class IslandController : IDisposable
+sealed partial class IslandController : IDisposable
 {
     readonly IslandWindow _win;
     readonly Body _body;
@@ -85,7 +85,8 @@ sealed class IslandController : IDisposable
         Screen = new ScreenAdapter(win.MonitorHandle);
 
         _dwell = Timer(80, () => { if (_inside && !_expanded) Expand(takeFocus: false); });
-        _leave = Timer(300, () => { if (!_inside && _expanded && _focusOwner == IntPtr.Zero) Collapse(); });
+        // The mirror stays until you close it (or two minutes pass); the ruler keeps the island while it is held.
+        _leave = Timer(300, () => { if (!_inside && _expanded && _focusOwner == IntPtr.Zero && _tool != "mirror" && !_surface.Holding) Collapse(); });
         _deadline = Timer(0, () => Queue.Tick(Clock.Now));
         _follower = new DisplayFollower(win.DisplayIdValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
         _followCheck = Timer(0, () => OnFrontWindow(Screen.FrontWindow));
@@ -93,8 +94,11 @@ sealed class IslandController : IDisposable
         Queue.Changed += (_, view) => Render(view);
         _music.Changed += () => { SyncMusicActivity(); Render(Queue.View); };
         _music.LineChanged += () => { if (!_expanded && _music.LyricsActive && Queue.View.Primary?.Key == MediaAdapter.ActivityKey) Render(Queue.View); };
+        _music.LineChanged += () => { if (_expanded) _surface.ShowPanelLyric(_music.LineIndex); };   // the lyrics beside the player follow the song
+        _surface.LyricsNow = () => (_music.Lines, _music.LineIndex);
         _music.PositionChanged += clock => { if (_expanded) _surface.UpdateProgress(clock); };
         _surface.Command += OnCommand;
+        HookMemory();
 
         var root = win.Root;
         root.PointerEntered += OnEntered;
@@ -124,6 +128,10 @@ sealed class IslandController : IDisposable
     public void Start(bool adapters = true)
     {
         foreach (var agent in Cast.All) { var a = agent; _roster[a].Changed += () => Ui(() => UpdateAgent(a)); }
+        _surface.Asked += line => Guard.Run(() => OnAsk(line), "ask");
+        _surface.AgentNow = ViewOf;
+        _surface.WantsFocus += () => { if (_focusOwner == IntPtr.Zero) _focusOwner = _win.TakeFocus(); };   // typing needs the keyboard
+        _win.PauseHotkey += () => Ui(() => { if (_paused) ResumeEverything(); else PauseEverything(); });
         ApplyLook();
         _flags.Changed += () => Ui(() => { _music.OnFlagsChanged(); ApplyLook(); });
         _win.SettingsChanged += () => Ui(ApplyLook);
@@ -132,7 +140,11 @@ sealed class IslandController : IDisposable
         _flags.Changed += () => Ui(() => { if (!_flags.IsOn("follow-display")) PlaceOnDisplay(); else SyncMirrors(); });
         _win.Show();
         SyncMirrors();   // after the island shows, so the mirrors show with it
-        if (adapters) _win.RegisterHotkey();   // a scripted demo never takes your global shortcut (a press anywhere would toggle its panel)
+        if (adapters)   // a scripted demo never takes your global shortcuts (a press anywhere would toggle its panel)
+        {
+            _win.RegisterHotkey();
+            _win.RegisterPauseHotkey();
+        }
         if (_flags.IsOn("diagnostics")) StartResourceSampler();
         // F121: half a minute after starting, and once a day after that, every file Forty wrote is
         // checked for key text, which is cut out if found. Off the UI thread; only counts are kept.
@@ -154,6 +166,8 @@ sealed class IslandController : IDisposable
         Audio.OutputChanged += (name, worn) => Ui(() => OnOutput(name, worn));
         ListenToSpeech();
         foreach (var adapter in Adapters) adapter.Start();
+        Timer(3000, () => LoadApps()).Start();   // after start-up has settled; costs no measurable memory
+        WatchForAway();
 
         _lastPower = Power.Snapshot;
         OnMedia(Media.Current);
@@ -339,7 +353,7 @@ sealed class IslandController : IDisposable
     void ListenToSpeech()
     {
         Speech.Line += line => Ui(() => OnSpeechLine(line));
-        Speech.Connected += () => Ui(() => { _policySent = null; SendPolicy(); Speech.Send("state?"); });
+        Speech.Connected += () => Ui(() => { _policySent = null; SendPolicy(); EchoGrants(); Speech.Send("state?"); });
         Speech.Lost += running => Ui(() => { OnSpeech(running ? _speech.LinkLost(Clock.Now) : _speech.ProcessGone()); if (!running) _roster.ApplySpeech("bye", Clock.Now); });
         Speech.ProcessExited += () => Ui(() => { OnSpeech(_speech.ProcessGone()); _roster.ApplySpeech("bye", Clock.Now); });
     }
@@ -347,10 +361,13 @@ sealed class IslandController : IDisposable
     /// <summary>One line from the speech process: the marks and activities (F116), and Scribe's run, whose jobs these are.</summary>
     void OnSpeechLine(string line)
     {
+        // "Hey Forty, ..." said with the dictation key held arrives as a request instead of being typed.
+        if (line.StartsWith("ask ", StringComparison.OrdinalIgnoreCase)) { OnAsk(line[4..], spoken: true); return; }
+        if (EchoLine(line)) return;   // Echo's page decides: the microphone or call notes may be switched off
         var changes = _speech.Apply(line, Clock.Now);
         OnSpeech(changes);
         _roster.ApplySpeech(line, Clock.Now);
-        if (changes.Level is { } level) _surface.SetAgentLevel(Cast.Scribe, level);
+        if (changes.Level is { } level) _surface.SetAgentLevel(Cast.Echo, level);
     }
 
     // ── The agents (phase 2) ──
@@ -377,6 +394,549 @@ sealed class IslandController : IDisposable
         _surface.ShowAgent(view);
         if (view.State == AgentState.Done) Timer((int)(AgentRun.DoneSeconds * 1000) + 50, () => _surface.ShowAgent(ViewOf(agent))).Start();
     }
+
+    // ── Forty, at rest ──
+
+    const double SleepAfterSeconds = 150;
+    Microsoft.UI.Dispatching.DispatcherQueueTimer? _awayCheck;
+    bool _asleep, _hostReacting;
+    Accent _lastPrimaryAccent;
+
+    /// <summary>
+    /// Forty's face shows while the island rests (not in the sliver over a maximised window, and not
+    /// while the panel is open). It blinks by itself only when that's affordable: not in battery saver,
+    /// not with reduced motion, and not while asleep.
+    /// </summary>
+    void UpdateHost(IslandView view)
+    {
+        bool resting = !_expanded && view.Primary == null && _body.Shape.Name is "rest" or "peek" && _win.IsVisible;
+        bool wasShown = _surface.HostShown;
+        _surface.ShowHost(resting, blink: Policy.IdleReactions && !_asleep);
+        // Something just finished and left the island: Forty reacts to how it went, briefly.
+        if (resting && !wasShown && !_asleep && _lastPrimaryAccent is Accent.Done or Accent.Error)
+            React(_lastPrimaryAccent == Accent.Done ? Expression.Happy : Expression.Sad, 1600);
+        _lastPrimaryAccent = view.Primary?.Accent ?? Accent.None;
+    }
+
+    async void React(Expression expression, int ms)
+    {
+        if (_asleep || _hostReacting) return;
+        _hostReacting = true;
+        _surface.Host.Express(expression);
+        await Task.Delay(ms);
+        _hostReacting = false;
+        if (!_asleep) _surface.Host.Express(_inside ? Expression.Perk : Expression.Neutral);
+    }
+
+    /// <summary>
+    /// Every two seconds: has anyone touched the keyboard or pointer? After a few minutes without input
+    /// Forty grows sleepy, then sleeps (eyes closed, a "z", nothing moving, no frames drawn). The first
+    /// input wakes it with a little start and a double blink.
+    /// </summary>
+    void WatchForAway()
+    {
+        _awayCheck = _ui.CreateTimer();
+        _awayCheck.Interval = TimeSpan.FromSeconds(2);
+        _awayCheck.Tick += (_, _) => Guard.Run(() =>
+        {
+            double idle = Native.IdleSeconds();
+            if (!_asleep && idle > SleepAfterSeconds) FallAsleep();
+            else if (_asleep && idle < 3) Wake();
+        }, "away");
+        _awayCheck.Start();
+    }
+
+    async void FallAsleep()
+    {
+        _asleep = true;
+        _surface.Host.Express(Expression.Sleepy);
+        _surface.Host.AutoBlink(false);
+        await Task.Delay(2400);
+        if (_asleep) _surface.HostSleep(true);
+    }
+
+    async void Wake()
+    {
+        if (!_asleep) return;
+        _asleep = false;
+        _surface.HostSleep(false);
+        _surface.Host.Express(Expression.Surprised);   // a little start
+        await Task.Delay(380);
+        if (_asleep) return;
+        _surface.Host.Express(_inside ? Expression.Perk : Expression.Neutral);
+        _surface.Host.Blink(@double: true);
+        _surface.ShowHost(_surface.HostShown, blink: Policy.IdleReactions);
+    }
+
+    /// <summary>For the layout check: Forty's face in an expression, looking somewhere, the lid at a point of a blink.</summary>
+    public void DemoHost(Expression expression, double lookX, double lookY, double lid, bool asleep = false)
+    {
+        _surface.Host.Express(expression);
+        _surface.Host.Look(lookX, lookY);
+        _surface.HostSleep(asleep);
+        _surface.Host.Settle(lid);
+    }
+
+    // ── Asking (F29, F112), Operator's first job (F39, F40) and the emergency pause (F125) ──
+
+    const string AskKey = "agents.ask", ResultKey = "agents.result", PausedKey = "agents.paused";
+    readonly RunLog _runs = new(Path.Combine(App.Home, "runs"));
+    IReadOnlyList<InstalledApp> _apps = Array.Empty<InstalledApp>();
+    DateTime _appsLoaded = DateTime.MinValue;
+    Func<InstalledApp, bool> _launch = AppIndex.Launch;
+    (InstalledApp App, RunBuilder Run)? _pendingOpen;
+    (IReadOnlyList<InstalledApp> Choices, RunBuilder Run)? _pendingChoice;
+    string? _choiceFor;   // what you asked for when Bolt asked which
+    bool _paused;
+    Activity? _reply;
+    double _replyAt;
+
+    /// <summary>
+    /// The agents' latest answer (a question with buttons, a result, a refusal). It goes to the queue,
+    /// so a closed island shows it in the capsule, and to the panel, which shows it under the ask field:
+    /// an open panel holds what it shows, so an answer to what you just asked would otherwise wait unseen.
+    /// </summary>
+    void Reply(Activity activity)
+    {
+        _reply = activity;
+        _replyAt = Clock.Now;
+        _lastPanel = null;
+        if (!HeldForLater(activity)) Queue.Post(activity, Clock.Now);   // F23: "brief only" keeps it out of the capsule
+        // An open panel holds what it shows, so the queue may see nothing new (an earlier answer under the
+        // same key is still waiting): the panel is refreshed here, so the answer always appears.
+        if (_expanded) Expand(takeFocus: false);
+    }
+
+    void ClearReply(string key)
+    {
+        bool shown = _reply?.Key == key;
+        if (shown) { _reply = null; _lastPanel = null; }
+        Queue.Remove(key, Clock.Now);
+        if (shown && _expanded) Expand(takeFocus: false);
+    }
+
+    static bool IsAgentReply(Activity? a) => a?.Key is AskKey or ResultKey or PausedKey or MemoryKey or IslandSurface.ThinkingKey;
+
+    /// <summary>The reply the panel shows: a question until it is answered, anything else for a few seconds longer than the capsule shows it.</summary>
+    Activity? CurrentReply => _reply is { } r && (r.Lifetime is not { } life || Clock.Now - _replyAt < life.TotalSeconds + 4) ? r : null;
+
+    /// <summary>Indexes the Start menu's apps off the UI thread (a second or two), then keeps the list.</summary>
+    void LoadApps(Action? then = null) => _ = Task.Run(AppIndex.Load).ContinueWith(t =>
+    {
+        if (t.Status == TaskStatus.RanToCompletion) Ui(() => { _apps = t.Result; _appsLoaded = DateTime.UtcNow; then?.Invoke(); });
+    }, TaskScheduler.Default);
+
+    /// <summary>A line asked in the panel's field (and, later, said aloud): the rules decide what it is and whose job.</summary>
+    void OnAsk(string line, bool spoken = false)
+    {
+        line = line.Trim();
+        if (line.Length == 0) return;
+        // The built-in rules first: instant, and nothing leaves this PC. The model only for the rest.
+        var request = RequestRules.Parse(line);
+        switch (request.Kind)
+        {
+            case RequestKind.PauseEverything: PauseEverything(); break;
+            case RequestKind.ResumeEverything: ResumeEverything(); break;
+            case RequestKind.OpenApp: OpenApp(request, retried: false, fromRules: true); break;
+            case RequestKind.Media: ControlMedia(request.Argument, request.Text, null); break;
+            case RequestKind.Tell: Tell(request.Argument, request.Text, null); break;
+            case RequestKind.Timer: TimerAsk(request.Argument, request.Text, null); break;
+            case RequestKind.Mirror: MirrorAsk(request.Argument); break;
+            case RequestKind.Remember: Remember(request.Argument, null, request.Text, null); break;
+            case RequestKind.Recall: Recall(request, request.Argument, null, fromRules: true); break;
+            case RequestKind.Forget: ForgetAsk(request.Argument, null); break;
+            case RequestKind.Memory: OpenPage("memory"); break;
+            default: Think(request); break;
+        }
+    }
+
+    // -- The brain (F29, F112, F140): a model chooses one skill; the island checks the choice and does the work --
+
+    public const string BrainFlag = "brain";
+    const string PausedNote = "Everything is paused. Resume first, with Resume in the panel or Ctrl+Alt+Shift+Space.";
+    Brain? _brain;
+    CancellationTokenSource? _thinking;
+    Exchange? _lastExchange;
+    readonly Queue<double> _modelCalls = new();
+    Func<string, Task<bool>>? _mediaControl;
+    bool _autoOpened;
+
+    /// <summary>"Understand anything" is on unless the flags file turns it off.</summary>
+    bool BrainOn => !_flags.Has(BrainFlag) || _flags.IsOn(BrainFlag);
+
+    /// <summary>The model that would be asked, if there is one.</summary>
+    Brain? BrainNow => _brain ??= ModelCatalog.Router(_keys) is { } model ? new Brain(model) : null;
+
+    /// <summary>Where a request was understood, for the line under an answer and for the run log (the start of F118).</summary>
+    sealed record Via(string Provider, bool OnThisPc, double Seconds)
+    {
+        public string Line => $"{Provider} · {(OnThisPc ? "this PC" : "cloud")} · {Seconds:0.0} s";
+    }
+
+    void ModelStep(RunBuilder run, Via? via)
+    {
+        if (via == null) return;
+        run.Step("Model", via.Provider, via.OnThisPc ? Risk.Read : Risk.External, $"understood the request in {via.Seconds:0.0} s",
+                 via.OnThisPc ? null : "your words were sent to the cloud (Understand anything is on)");
+    }
+
+    void Think(Request request)
+    {
+        if (_paused) { Note("Everything is paused", PausedNote, Accent.NeedsYou); return; }
+        if (!BrainOn)
+        {
+            Note("That's beyond my built-in commands", "“Understand anything” is off, so I only know my built-in commands: opening apps, the music, the time and the battery. Turn it on in Settings to ask anything.", Accent.None);
+            return;
+        }
+        if (BrainNow is not { } brain)
+        {
+            Note("No model is connected", "To understand anything you ask, I need a model. Store a Sarvam key with setup-keys.cmd (in the spikes folder), then ask again.", Accent.NeedsYou);
+            return;
+        }
+        // A runaway loop can't spend your credits: at most 30 model calls in five minutes.
+        while (_modelCalls.Count > 0 && Clock.Now - _modelCalls.Peek() > 300) _modelCalls.Dequeue();
+        if (_modelCalls.Count >= 30) { Note("One moment", "That's a lot of requests at once. Try again in a minute.", Accent.None); return; }
+        _modelCalls.Enqueue(Clock.Now);
+        _ = ThinkAsync(request, brain);
+    }
+
+    async Task ThinkAsync(Request request, Brain brain)
+    {
+        _thinking?.Cancel();   // a new request replaces one still being understood
+        var cancel = _thinking = new CancellationTokenSource();
+        Reply(new Activity(IslandSurface.ThinkingKey, "forty", Priority.Timely, "Thinking…", null, "\uE712", "Forty is working out what you asked", null));
+        BrainResult result;
+        try { result = await brain.DecideAsync(request.Text, _lastExchange, Clock.Now, cancel.Token); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex)
+        {
+            Guard.Report?.Invoke(ex, "brain");
+            result = new BrainResult(null, brain.Model.Name, brain.Model.OnThisPc, 0, ModelTrouble.Unreadable);
+        }
+        if (cancel.IsCancellationRequested || _thinking != cancel) return;
+        _thinking = null;
+        ClearReply(IslandSurface.ThinkingKey);
+        Guard.Run(() => Act(request, result), "act");
+    }
+
+    /// <summary>Does what was decided. Every path here is the island's own code, with its own checks and approvals.</summary>
+    void Act(Request request, BrainResult result)
+    {
+        if (result.Decision is not { } decision)
+        {
+            var trouble = result.Trouble ?? ModelTrouble.Unreadable;
+            Note(trouble == ModelTrouble.Unreadable ? "I didn't catch that" : "I couldn't work that out", Brain.Explain(trouble, result.Provider), trouble == ModelTrouble.Refused ? Accent.NeedsYou : Accent.None);
+            ShowAnswerPanel(6);
+            return;
+        }
+        var via = new Via(result.Provider, result.OnThisPc, result.Seconds);
+        _lastExchange = new Exchange(request.Text, result.DecisionJson ?? "{}", Clock.Now);
+        if (decision.Skill == Skills.OpenApp) OpenApp(request with { Kind = RequestKind.OpenApp, Agent = Cast.Bolt, Argument = decision.Argument }, retried: false, fromRules: false, via);
+        else if (decision.Skill == Skills.Media) ControlMedia(decision.Argument, request.Text, via);
+        else if (decision.Skill == Skills.Tell) Tell(decision.Argument, request.Text, via);
+        else if (decision.Skill == Skills.Timer) TimerAsk(decision.Argument, request.Text, via);
+        else if (decision.Skill == Skills.Mirror) MirrorAsk("open");
+        else if (decision.Skill == Skills.Remember) Remember(decision.Argument, decision.Topic, request.Text, via);
+        else if (decision.Skill == Skills.Recall) Recall(request, decision.Argument, via, fromRules: false);
+        else if (decision.Skill == Skills.Forget) ForgetAsk(decision.Argument, via);
+        else if (decision.Skill == Skills.PauseAll) PauseEverything();
+        else if (decision.Skill == Skills.ResumeAll) ResumeEverything();
+        else if (decision.Skill == Skills.Answer) Answer(decision.Say ?? "", request.Text, via);
+        else
+        {
+            Reply(new Activity(ResultKey, "forty", Priority.Timely, "I can't do that yet", via.Line, "\uE946", decision.Say ?? "I can't do that yet.", TimeSpan.FromSeconds(9)));
+            ShowAnswerPanel(9);
+        }
+    }
+
+    /// <summary>Bolt's media skill: what's playing is paused, played or skipped (the player does it; Forty only asks).</summary>
+    void ControlMedia(string action, string text, Via? via)
+    {
+        if (_paused) { Note("Everything is paused", PausedNote, Accent.NeedsYou); return; }
+        if (!Gate("media", "playing", () => ControlMedia(action, text, via))) return;
+        var bolt = _roster[Cast.Bolt];
+        var run = new RunBuilder(Cast.Bolt, text);
+        ModelStep(run, via);
+        var playing = _music.Playing;
+        string? nothing = playing == null ? "Nothing is playing"
+            : action == "pause" && !playing.Playing ? "It's already paused"
+            : action == "play" && playing.Playing ? "It's already playing" : null;
+        if (nothing != null)
+        {
+            run.Step("Media", action, Risk.Local, nothing.ToLowerInvariant());
+            _runs.Save(run.Finish(nothing));
+            _lastPanel = null;
+            Note(nothing, nothing + ".", Accent.None, Cast.Bolt);
+            return;
+        }
+        bolt.UseTool("Media");
+        string op = action is "play" or "pause" ? "toggle" : action;
+        var control = _mediaControl ?? (o => o switch { "next" => Media.NextAsync(), "previous" => Media.PreviousAsync(), _ => Media.PlayPauseAsync() });
+        _ = control(op).ContinueWith(done => Ui(() =>
+        {
+            bool ok = done.Status == TaskStatus.RanToCompletion && done.Result;
+            string said = action switch { "pause" => "Paused", "play" => "Playing", "next" => "Next track", _ => "Previous track" };
+            run.Step("Media", action, Risk.Local, ok ? "done" : "the player didn't accept it");
+            if (ok)
+            {
+                Finish(run, bolt, said, failed: false);
+                Reply(new Activity(ResultKey, "operator", Priority.Ambient, said, null, "\uE73E", $"{Cast.Bolt.Name}: {said.ToLowerInvariant()}", TimeSpan.FromSeconds(2.5), Accent.Done, AgentId: Cast.Bolt.Id));
+            }
+            else
+            {
+                Finish(run, bolt, "The player didn't respond", failed: true);
+                Note("The player didn't respond", "The app that's playing didn't accept that.", Accent.Error, Cast.Bolt);
+            }
+        }), TaskScheduler.Default);
+    }
+
+    /// <summary>Iris's "tell" skill: a fact this PC already knows. The model may choose the fact; the value never comes from it.</summary>
+    void Tell(string fact, string text, Via? via)
+    {
+        if (_paused) { Note("Everything is paused", PausedNote, Accent.NeedsYou); return; }
+        if (!Gate("tell", "this-pc", () => Tell(fact, text, via))) return;
+        var iris = _roster[Cast.Iris];
+        var run = new RunBuilder(Cast.Iris, text);
+        ModelStep(run, via);
+        iris.Work();
+        string said = fact switch
+        {
+            "time" => $"It's {DateTime.Now:t}",
+            "date" => $"It's {DateTime.Now:dddd, d MMMM}",
+            _ => BatteryNow() is { } b ? $"Battery {b.Percent}%{(b.Charging ? ", charging" : b.PluggedIn ? ", plugged in" : "")}" : "This PC has no battery",
+        };
+        run.Step("This PC", fact, Risk.Read, "read");
+        Finish(run, iris, said, failed: false);
+        Reply(new Activity(ResultKey, "scout", Priority.Timely, said, null, "\uE946", said, TimeSpan.FromSeconds(5), AgentId: Cast.Iris.Id));
+    }
+
+    /// <summary>Iris's "answer" skill: the model's own words, shown as Iris's, with where they came from underneath.</summary>
+    void Answer(string words, string question, Via via)
+    {
+        if (!Gate("answer", null, () => Answer(words, question, via))) return;
+        var iris = _roster[Cast.Iris];
+        var run = new RunBuilder(Cast.Iris, question);
+        ModelStep(run, via);
+        iris.Work();
+        run.Step("Answer", "general knowledge", Risk.Read, "answered");
+        Finish(run, iris, "Answered", failed: false);
+        double seconds = Math.Clamp(6 + words.Length / 14.0, 9, 32);   // long enough to read it
+        Reply(new Activity(ResultKey, "scout", Priority.Timely, Cast.Iris.Name, via.Line, "\uE946", words, TimeSpan.FromSeconds(seconds), AgentId: Cast.Iris.Id));
+        ShowAnswerPanel(seconds, Cast.Iris);
+    }
+
+    /// <summary>
+    /// An answer is a sentence or two, which a capsule can't hold: if the panel is closed (you asked by
+    /// voice, or closed it while Forty thought) it opens without taking the keyboard, and closes again
+    /// once there has been time to read, unless you've moved into it.
+    /// </summary>
+    void ShowAnswerPanel(double readSeconds, Agent? agent = null)
+    {
+        if (_expanded) return;
+        if (agent != null && _settings.InterruptionFor(agent) != Interruption.InterruptMe) return;   // F23: quietly, or for later
+        _autoOpened = true;
+        Expand(takeFocus: false);
+        // Kept in a field: a timer nothing holds can be collected before it fires, and the panel would stay open.
+        _answerTimer?.Stop();
+        _answerTimer = Timer((int)(readSeconds * 1000), () =>
+        {
+            if (_autoOpened && _expanded && !_inside && _focusOwner == IntPtr.Zero && _pendingOpen == null && _pendingChoice == null) Collapse();
+            _autoOpened = false;
+        });
+        _answerTimer.Start();
+    }
+
+    DispatcherQueueTimer? _answerTimer;
+
+    /// <summary>For the layout check and tests: a scripted model, and a player that only records what it was asked.</summary>
+    public void DemoBrain(IChatModel model, List<string> mediaLog)
+    {
+        _brain = new Brain(model);
+        _mediaControl = op => { mediaLog.Add(op); return Task.FromResult(true); };
+    }
+
+    void OpenApp(Request request, bool retried, bool fromRules = true, Via? via = null)
+    {
+        if (_paused) { Note("Everything is paused", PausedNote, Accent.NeedsYou); return; }
+        if (!Gate("open_app", "apps", () => OpenApp(request, retried, fromRules, via))) return;
+        var operatorRun = _roster[Cast.Bolt];
+        var run = new RunBuilder(Cast.Bolt, request.Text);
+        ModelStep(run, via);
+        operatorRun.Work();
+        var match = AppMatcher.Find(request.Argument, _apps, _settings.Aliases);
+        // A kind of app you chose before, and said yes to remembering: that one, without asking which (F95).
+        if (match.How == "purpose" && RememberedApp(request.Argument) is { } remembered)
+        {
+            match = new AppMatch(remembered, new[] { remembered }, "memory");
+            run.Step("Memory", $"Bolt's memory", Risk.Read, "remembered your choice");
+        }
+        // Nothing found in a list that may be stale (an app installed since): index again once, then answer.
+        if (match.App == null && match.Choices.Count == 0 && !retried && DateTime.UtcNow - _appsLoaded > TimeSpan.FromSeconds(30) && _launch == AppIndex.Launch)
+        {
+            LoadApps(() => OpenApp(request, retried: true, fromRules, via));
+            return;
+        }
+        // "Show me how to tie a tie" starts like "show me Spotify". When the rules took it for an app and
+        // there is no such app, it was probably a question: the brain looks at it instead.
+        if (match.App == null && match.Choices.Count == 0 && fromRules && BrainOn && BrainNow != null)
+        {
+            operatorRun.End();
+            Think(request);
+            return;
+        }
+        if (match.App is { } app)
+        {
+            run.Step("Apps", app.Name, Risk.Read, $"found by {match.How}");
+            if (_settings.IsApproved(app.Name)) Launch(app, run, "on your list");
+            else Ask(app, run);
+            return;
+        }
+        if (match.Choices.Count > 1)
+        {
+            var choices = match.Choices.Take(2).ToList();
+            run.Step("Apps", request.Argument, Risk.Read, $"{match.Choices.Count} matches");
+            _pendingChoice = (choices, run);
+            _choiceFor = request.Argument;
+            operatorRun.Ask("Which one?");
+            Reply(new Activity(AskKey, "operator", Priority.ActNow, "Which one?", null, "",
+                $"{Cast.Bolt.Name} found more than one app for “{request.Argument}”: {string.Join(" or ", choices.Select(c => c.Name))}. Which one?", null, Accent.NeedsYou,
+                Actions: new ActivityActions(Short(choices[0].Name), "open-choice:0", Short(choices[1].Name), "open-choice:1", "Neither", "open-none"), AgentId: Cast.Bolt.Id));
+            return;
+        }
+        run.Step("Apps", request.Argument, Risk.Read, "not found");
+        Finish(run, operatorRun, $"Couldn't find {request.Argument}", failed: true);
+        Note($"No app called {Short(request.Argument)}", $"{Cast.Bolt.Name} couldn't find an app called “{request.Argument}”.", Accent.Error, Cast.Bolt);
+    }
+
+    static string Short(string name) => name.Length > 18 ? name[..17] + "…" : name;
+
+    /// <summary>F40: an app not on your list is opened only after a yes: always (it joins the list), once, or not at all.</summary>
+    void Ask(InstalledApp app, RunBuilder run)
+    {
+        _pendingOpen = (app, run);
+        _roster[Cast.Bolt].AskApproval($"open {app.Name}");
+        Reply(new Activity(AskKey, "operator", Priority.ActNow, $"Open {Short(app.Name)}?", null, "",
+            $"{Cast.Bolt.Name} would like to open {app.Name}. It isn't on your list of apps {Cast.Bolt.Name} may open.", null, Accent.NeedsYou,
+            Actions: new ActivityActions("Always", "open-always", "Once", "open-once", "No", "open-no"), AgentId: Cast.Bolt.Id));
+    }
+
+    void Launch(InstalledApp app, RunBuilder run, string approval)
+    {
+        var operatorRun = _roster[Cast.Bolt];
+        operatorRun.UseTool("Apps");
+        bool opened = _launch(app);
+        run.Step("Apps", app.Name, Risk.Local, opened ? "opened" : "Windows refused", approval);
+        if (opened)
+        {
+            Finish(run, operatorRun, $"Opened {app.Name}", failed: false);
+            // Like Spotlight: the panel closes, and focus is not handed back, so the app just opened keeps it.
+            if (_expanded) { _focusOwner = IntPtr.Zero; Collapse(); }
+            Reply(new Activity(ResultKey, "operator", Priority.Ambient, $"Opened {Short(app.Name)}", null, "", $"{Cast.Bolt.Name} opened {app.Name}", TimeSpan.FromSeconds(2.5), Accent.Done, AgentId: Cast.Bolt.Id));
+            OfferMemoryCardSoon();
+        }
+        else
+        {
+            Finish(run, operatorRun, $"Couldn't open {app.Name}", failed: true);
+            Note($"Couldn't open {Short(app.Name)}", $"Windows didn't open {app.Name}.", Accent.Error, Cast.Bolt);
+        }
+    }
+
+    void Finish(RunBuilder run, AgentRun agentRun, string outcome, bool failed)
+    {
+        if (failed) agentRun.Fail(outcome); else agentRun.Finish(Clock.Now);
+        _runs.Save(run.Finish(outcome));
+        _lastPanel = null;   // the panel's last results include it
+    }
+
+    /// <summary>A short answer in the island: a note, a refusal or a failure.</summary>
+    void Note(string title, string narration, Accent accent, Agent? agent = null) =>
+        Reply(new Activity(ResultKey, agent?.Id ?? "forty", Priority.Timely, title, null, accent == Accent.Error ? "\uE783" : "\uE946", narration,
+                           TimeSpan.FromSeconds(Math.Clamp(4 + narration.Length / 18.0, 4, 12)), accent, AgentId: agent?.Id));
+
+    void AnswerOpen(string answer)
+    {
+        ClearReply(AskKey);
+        if (_pendingOpen is not { } pending) return;
+        _pendingOpen = null;
+        var operatorRun = _roster[Cast.Bolt];
+        switch (answer)
+        {
+            case "always":
+                _settings.Approve(pending.App.Name);
+                Launch(pending.App, pending.Run, "you said always");
+                break;
+            case "once":
+                Launch(pending.App, pending.Run, "you said once");
+                break;
+            default:
+                pending.Run.Step("Apps", pending.App.Name, Risk.Local, "not opened", "you said no");
+                Finish(pending.Run, operatorRun, $"Didn't open {pending.App.Name}", failed: false);
+                break;
+        }
+    }
+
+    void AnswerChoice(int index)
+    {
+        ClearReply(AskKey);
+        if (_pendingChoice is not { } pending) return;
+        _pendingChoice = null;
+        if (index < 0 || index >= pending.Choices.Count)
+        {
+            pending.Run.Step("Apps", "", Risk.Read, "none chosen", "you said neither");
+            Finish(pending.Run, _roster[Cast.Bolt], "Nothing opened", failed: false);
+            return;
+        }
+        var app = pending.Choices[index];
+        LearnChoice(app, _choiceFor);   // a suggestion only: nothing is remembered until you say yes
+        _roster[Cast.Bolt].Work();
+        if (_settings.IsApproved(app.Name)) Launch(app, pending.Run, "on your list");
+        else Ask(app, pending.Run);
+    }
+
+    /// <summary>
+    /// F125: everything stops where it is. Call capture is told to stop, every agent shows Paused (idle
+    /// ones too, so nothing new starts), questions waiting for you are withdrawn, and nothing resumes
+    /// until you resume it.
+    /// </summary>
+    void PauseEverything()
+    {
+        if (_paused) return;
+        _paused = true;
+        _thinking?.Cancel();   // a request still being understood is dropped, and its network call cancelled
+        _thinking = null;
+        ClearReply(IslandSurface.ThinkingKey);
+        if (Speech.IsConnected) Speech.Send("stop");
+        foreach (var agent in Cast.All) _roster[agent].Pause(evenIdle: true);
+        _pendingOpen = null;
+        _pendingChoice = null;
+        ClearReply(AskKey);
+        Reply(new Activity(PausedKey, "forty", Priority.Timely, "Everything paused", null, "",
+            "Everything is paused. Nothing runs until you resume.", null, Accent.NeedsYou, Actions: new ActivityActions("Resume", "resume-all")));
+        _lastPanel = null;
+    }
+
+    void ResumeEverything()
+    {
+        if (!_paused) return;
+        _paused = false;
+        foreach (var agent in Cast.All) _roster[agent].Resume();
+        ClearReply(PausedKey);
+        if (_reply?.Key == ResultKey) ClearReply(ResultKey);   // "everything is paused" no longer holds
+        _lastPanel = null;
+        if (_expanded) Expand(takeFocus: false);
+    }
+
+    /// <summary>For the layout check: a fixed list of apps, and a launcher that records instead of opening anything.</summary>
+    public void DemoApps(IReadOnlyList<InstalledApp> apps, List<string> opened)
+    {
+        _apps = apps;
+        _appsLoaded = DateTime.UtcNow;
+        _launch = app => { opened.Add(app.Name); return true; };
+    }
+
+    public void DemoAsk(string line) => _surface.DemoAsk(line);
+    public IReadOnlyList<string> ApprovedApps => _settings.Approved;
+    public void DemoCommandAnswer(string command) => OnCommand(command);
 
     /// <summary>Applies what the speech process reported: the level goes straight to the meter, the rest through the queue.</summary>
     void OnSpeech(SpeechChanges changes)
@@ -465,7 +1025,7 @@ sealed class IslandController : IDisposable
         bool hide = view.Marks.Count == 0 &&
                     ((Screen.Front == FrontState.FullScreen && view.Primary == null && view.Dots.Count == 0) ||
                      (chosenApp && view.Primary?.Priority != Priority.ActNow));
-        if (hide) { if (_win.IsVisible) { _win.Hide(); foreach (var m in _mirrors.Values) m.Hide(); } MusicLook(false); return; }
+        if (hide) { if (_win.IsVisible) { _win.Hide(); foreach (var m in _mirrors.Values) m.Hide(); } MusicLook(false); _surface.ShowHost(false, blink: false); return; }
         if (!_win.IsVisible) { _win.Show(); foreach (var m in _mirrors.Values) m.Show(); }
 
         bool music = view.Primary?.Key == MediaAdapter.ActivityKey && _music.View != null;
@@ -510,6 +1070,7 @@ sealed class IslandController : IDisposable
             : view.Dots[0].Accent is Accent.None && view.Dots[0].Priority == Priority.ActNow ? Accent.NeedsYou : view.Dots[0].Accent
             : null);
         AnnounceMarks(view);
+        UpdateHost(view);
         Shown?.Invoke(view.Primary?.Key ?? (view.Dots.Count > 0 ? "dot" : "rest"));
     }
 
@@ -550,7 +1111,8 @@ sealed class IslandController : IDisposable
     }
 
     CapsuleContent ContentFor(Activity primary) =>
-        primary.Key == MediaAdapter.ActivityKey && _music.View is { } song ? new CapsuleContent(primary with { Title = song.Title }, song, null)
+        primary.Key == IslandSurface.TimerKey && _timer.Phase != TimerPhase.Off ? new CapsuleContent(primary, null, null, TimerViewNow())
+        : primary.Key == MediaAdapter.ActivityKey && _music.View is { } song ? new CapsuleContent(primary with { Title = song.Title }, song, null)
         : primary.Source == "power" && BatteryNow() is { } battery ? new CapsuleContent(primary, null, battery)
         : new CapsuleContent(primary, null, null);
 
@@ -586,14 +1148,19 @@ sealed class IslandController : IDisposable
     void ExpandNow(bool takeFocus)
     {
         if (_settingsOpen) { ShowSettingsPage(takeFocus); return; }
+        if (_tool != null) { ShowToolPage(takeFocus); return; }
         var view = Queue.View;
-        var primary = view.Primary ?? (_music.View != null ? MediaAdapter.ToActivity(_music.Playing! with { Playing = true }) : null);
-        var others = new[] { view.Satellite }.Where(a => a != null).Select(a => a!).ToList();
+        // The agents' answers are shown under the ask field (with the roster), not as the panel's subject.
+        bool agents = AgentsOn;
+        // A running timer has its own card at the top, so it isn't the panel's subject or one of its lines.
+        var primary = (agents && IsAgentReply(view.Primary) || view.Primary?.Key == TimerKey ? null : view.Primary) ?? (_music.View != null ? MediaAdapter.ToActivity(_music.Playing! with { Playing = true }) : null);
+        var others = new[] { view.Satellite }.Where(a => a != null && !(agents && IsAgentReply(a)) && a.Key != TimerKey).Select(a => a!).ToList();
         foreach (var mark in view.Marks)   // every mark is listed in the panel, with its Stop button
             if (mark.Key != primary?.Key && others.All(o => o.Key != mark.Key)) others.Insert(0, mark);
         DateTimeOffset? recordingSince = _speech.CallSince is { } since ? DateTimeOffset.Now - TimeSpan.FromSeconds(Clock.Now - since) : null;
         var model = new PanelModel(primary, others, _music.View, BatteryNow(), Bluetooth.Devices, ModeLine(view.Mode), recordingSince,
-                                   AgentsOn ? Cast.Working.Select(ViewOf).ToList() : null);
+                                   agents ? Cast.Working.Select(ViewOf).ToList() : null, agents ? _runs.Recent(3) : null, _paused, agents ? CurrentReply : null,
+                                   BrainOn && BrainNow != null ? "Ask Forty anything" : null, _timer.Phase != TimerPhase.Off ? TimerViewNow() : null);
         // Power and position reports arrive often. Rebuilding an open panel each time would waste work
         // and take keyboard focus away from you, so it is rebuilt only when what it shows changes.
         if (_expanded && _lastPanel is { } shown && Same(shown, model) && _body.Shape.Name != "full") return;
@@ -601,6 +1168,7 @@ sealed class IslandController : IDisposable
         double capsuleWidth = _body.W.Target;
         _lastPanel = model;
         _expanded = true;
+        _surface.ShowHost(false, blink: false);
         MusicLook(primary?.Key == MediaAdapter.ActivityKey);
         string kind = model.Music != null && primary?.Key == MediaAdapter.ActivityKey ? "music" : "other";
         if (opening)
@@ -608,13 +1176,14 @@ sealed class IslandController : IDisposable
             // The body starts growing on this frame, to the height this kind of panel had last time;
             // the content is built just after, and the height is corrected (smoothly) if it differs.
             double guess = _panelHeights.TryGetValue(kind, out double known) ? known : kind == "music" ? 300 : 190;
-            _body.GoTo(BodyShape.Panel with { Height = guess }, Springs.Move);
+            double wideGuess = kind == "music" && _music.LyricsOn && _music.Lines.Count > 0 ? IslandSurface.WideWidth : BodyShape.Panel.Width;
+            _body.GoTo(BodyShape.Panel with { Height = guess, Width = wideGuess }, Springs.Move);
             Defer(() =>
             {
                 if (!_expanded) return;
                 double height = _surface.ShowPanel(model, opening: true, capsuleWidth);
                 _panelHeights[kind] = height;
-                if (Math.Abs(height - guess) > 0.5) _body.GoTo(BodyShape.Panel with { Height = height }, Springs.Move);
+                if (Math.Abs(height - guess) > 0.5 || _surface.PanelWidth != wideGuess) _body.GoTo(BodyShape.Panel with { Height = height, Width = _surface.PanelWidth }, Springs.Move);
                 if (takeFocus) _surface.FocusFirst();
             });
         }
@@ -622,7 +1191,8 @@ sealed class IslandController : IDisposable
         {
             double height = _surface.ShowPanel(model, opening: false, capsuleWidth);
             _panelHeights[kind] = height;
-            _body.GoTo(BodyShape.Panel with { Height = height }, Springs.Quick);
+            _body.GoTo(BodyShape.Panel with { Height = height, Width = _surface.PanelWidth }, Springs.Quick);
+            if (_focusOwner != IntPtr.Zero) _surface.FocusFirst();   // you were typing: the rebuilt panel keeps the cursor in the field
         }
         _body.ShowSatellite(false);
         _body.ShowDot(null);
@@ -642,14 +1212,25 @@ sealed class IslandController : IDisposable
     {
         bool opening = _body.Shape.Name != "full";
         double maxHeight = Math.Min(BodyShape.Full.Height, _win.MonitorPx.Height / _win.Scale * 0.7);
-        var model = SettingsNow();
+        int direction = _pageDirection;
+        _pageDirection = 0;
+        string? page = _settingsPage;
+        _expanded = true;                           // a page can open straight from the capsule (a face, a card)
+        _surface.ShowHost(false, blink: false);     // Forty's resting face stays out of the pages
+        // Settings, an agent's page or the memory page: the same frame, built from what is true now.
+        double Build(bool open) => page switch
+        {
+            "memory" => _surface.ShowMemoryPage(MemoryPageNow(), direction, open, maxHeight),
+            { } p when p.StartsWith("agent:", StringComparison.Ordinal) && Cast.ById(p[6..]) is { } agent => _surface.ShowAgentPage(AgentPageNow(agent), direction, open, maxHeight),
+            _ => _surface.ShowSettings(SettingsNow(), open, maxHeight, direction),
+        };
         if (opening)
         {
             _body.GoTo(BodyShape.Full with { Height = _settingsHeight ?? maxHeight }, Springs.Move);
             Defer(() =>
             {
                 if (!_settingsOpen) return;
-                double height = _surface.ShowSettings(model, opening: true, maxHeight);
+                double height = Build(true);
                 _settingsHeight = height;
                 _body.GoTo(BodyShape.Full with { Height = height }, Springs.Move);
                 if (takeFocus) _surface.FocusFirst();
@@ -657,7 +1238,7 @@ sealed class IslandController : IDisposable
         }
         else
         {
-            double height = _surface.ShowSettings(model, opening: false, maxHeight);
+            double height = Build(false);
             _body.GoTo(BodyShape.Full with { Height = height }, Springs.Quick);
         }
         _body.ShowSatellite(false);
@@ -694,7 +1275,8 @@ sealed class IslandController : IDisposable
             Bluetooth.Devices.Select(d => (d, _settings.IsQuiet(d.Id))).ToList(), diagnostics,
             typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0",
             _flags.IsOn("follow-display"), Microsoft.UI.Windowing.DisplayArea.FindAll().Count, _keys.Names, _helloReady == true,
-            _flags.IsOn("every-display"));
+            _flags.IsOn("every-display"), BrainOn, BrainNow?.Model is { } m ? m.Name + (m.OnThisPc ? "" : " (cloud)") : null, SoundsOn,
+            _memory.All(DateTimeOffset.Now).Count, _memory.Suggested(DateTimeOffset.Now).Count);
     }
 
     /// <summary>F9 in words: the display's rate, and how many refreshes motion missed.</summary>
@@ -725,7 +1307,8 @@ sealed class IslandController : IDisposable
         Equals(a.Primary, b.Primary) && a.Others.SequenceEqual(b.Others) && a.ModeLine == b.ModeLine && a.Battery == b.Battery &&
         (a.RecordingSince == null) == (b.RecordingSince == null) &&
         (a.Agents == null) == (b.Agents == null) &&   // agents' states change in place, not by rebuilding
-        a.Devices.SequenceEqual(b.Devices) &&
+        a.Results?.FirstOrDefault()?.Id == b.Results?.FirstOrDefault()?.Id && a.Paused == b.Paused && Equals(a.Reply, b.Reply) && a.AskHint == b.AskHint &&
+        a.Devices.SequenceEqual(b.Devices) && a.Timer?.Phase == b.Timer?.Phase && a.Timer?.Duration == b.Timer?.Duration &&
         Equals(a.Music is { } m ? m with { Clock = default } : null, b.Music is { } n ? n with { Clock = default } : null);
 
     void Collapse()
@@ -733,6 +1316,9 @@ sealed class IslandController : IDisposable
         if (!_expanded) return;
         _expanded = false;
         _settingsOpen = false;
+        _settingsPage = null;
+        _memoryEditing = _memoryConfirm = _memoryForgot = null;
+        CloseTool();
         _lastPanel = null;
         _contentVersion++;   // a panel still waiting to be built is not built
         _surface.HidePanel();
@@ -757,6 +1343,7 @@ sealed class IslandController : IDisposable
 
     void OnCommand(string command)
     {
+        if (PageCommand(command) || ToolCommand(command)) return;
         var playing = _music.Playing;
         switch (command)
         {
@@ -768,6 +1355,13 @@ sealed class IslandController : IDisposable
                 _ = Media.SetRepeatAsync(playing?.Repeat switch { RepeatMode.Off => RepeatMode.List, RepeatMode.List => RepeatMode.Track, _ => RepeatMode.Off });
                 break;
             case "quit": Ambient.StopAll(); Application.Current.Exit(); break;
+            case "open-always": AnswerOpen("always"); break;
+            case "open-once": AnswerOpen("once"); break;
+            case "open-no": AnswerOpen("no"); break;
+            case "open-none": AnswerChoice(-1); break;
+            case var choice when choice.StartsWith("open-choice:", StringComparison.Ordinal): AnswerChoice(int.Parse(choice[12..], System.Globalization.CultureInfo.InvariantCulture)); break;
+            case "pause-all": PauseEverything(); break;
+            case "resume-all": ResumeEverything(); break;
             // Answers for the speech process, in its own words.
             case "call-accept": Speech.Send("accept"); break;
             case "call-decline":
@@ -782,6 +1376,7 @@ sealed class IslandController : IDisposable
             case "settings":
                 if (_helloReady == null) _ = HelloReadyAsync().ContinueWith(_ => Ui(() => { if (_settingsOpen) Expand(takeFocus: false); }));
                 _settingsOpen = true;
+                CloseTool();
                 _lastPanel = null;
                 Expand(takeFocus: false);
                 break;
@@ -818,7 +1413,7 @@ sealed class IslandController : IDisposable
                 break;
             case var toggle when toggle.StartsWith("toggle:", StringComparison.Ordinal):
                 string flag = toggle[7..];
-                bool on = flag == MusicDirector.ColoursFlag ? _music.ColoursOn : _flags.IsOn(flag);
+                bool on = flag == MusicDirector.ColoursFlag ? _music.ColoursOn : flag == BrainFlag ? BrainOn : flag == Sounds.Flag ? SoundsOn : _flags.IsOn(flag);
                 _flags.Set(flag, on ? FlagState.Off : FlagState.On);   // the flags' Changed event re-renders
                 break;
         }
@@ -860,6 +1455,7 @@ sealed class IslandController : IDisposable
     void OnEntered(object sender, PointerRoutedEventArgs e)
     {
         _inside = true;
+        _autoOpened = false;   // you came to it: it's yours to close now
         _leave.Stop();
         _touch = e.Pointer.PointerDeviceType == PointerDeviceType.Touch;
         _anchor = e.GetCurrentPoint(_win.Root).Position;
@@ -867,6 +1463,7 @@ sealed class IslandController : IDisposable
         if (_expanded) return;
         if (Queue.View.Primary is { } primary) Queue.Hold(primary.Key, Clock.Now);
         else _body.GoTo(BodyShape.Peek, Springs.Press);   // the instant answer
+        if (_surface.HostShown) { if (_asleep) Wake(); else if (!_hostReacting) _surface.Host.Express(Expression.Perk); }   // Forty perks up when you come close
     }
 
     /// <summary>
@@ -880,7 +1477,9 @@ sealed class IslandController : IDisposable
         if (_inside && !_expanded && !MotionPolicy.Reduced)
         {
             double cx = _win.WidthDip / 2, cy = _body.Shape.Top + _win.TopInsetDip + _body.Shape.Height / 2;
-            _surface.Lean(Math.Clamp((at.X - cx) / (_body.Shape.Width / 2), -1, 1), Math.Clamp((at.Y - cy) / (_body.Shape.Height / 2), -1, 1));
+            double lx = Math.Clamp((at.X - cx) / (_body.Shape.Width / 2), -1, 1), ly = Math.Clamp((at.Y - cy) / (_body.Shape.Height / 2), -1, 1);
+            _surface.Lean(lx, ly);
+            if (_surface.HostShown && !_asleep) _surface.Host.Look(lx, ly);   // and follows the pointer with its eyes
         }
         if (!_inside || _armed || _expanded) return;
         double dx = at.X - _anchor.X, dy = at.Y - _anchor.Y;
@@ -895,6 +1494,7 @@ sealed class IslandController : IDisposable
         _armed = false;
         _dwell.Stop();
         _surface.Lean(0, 0);
+        if (_surface.HostShown && !_asleep) { _surface.Host.Look(0, 0); if (!_hostReacting) _surface.Host.Express(Expression.Neutral); }
         if (_expanded) { _leave.Start(); return; }
         Queue.Hold(null, Clock.Now);
         if (Queue.View.Primary == null) _body.GoTo(RestShape, Springs.Quick);

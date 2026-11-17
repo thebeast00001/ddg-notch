@@ -14,11 +14,12 @@ sealed record SettingsModel(
     bool Lyrics, bool Colours, bool AnnounceDevices, bool OutputNotes, bool HideFromCapture, bool Glass,
     IReadOnlyList<int> Alerts, int? FullAlert, IReadOnlyList<string> HiddenApps, string? FrontProgram,
     IReadOnlyList<(BluetoothState Device, bool Quiet)> Devices, IReadOnlyList<string> Diagnostics, string Version,
-    bool FollowDisplay = false, int Displays = 1, IReadOnlyList<string>? Keys = null, bool HelloReady = false, bool EveryDisplay = false)
+    bool FollowDisplay = false, int Displays = 1, IReadOnlyList<string>? Keys = null, bool HelloReady = false, bool EveryDisplay = false,
+    bool Brain = true, string? BrainModel = null, bool Sounds = true, int Memories = 0, int Suggestions = 0)
 {
     /// <summary>What changes the page's structure (lists); switches and chips update themselves in place.</summary>
     public string Structure => string.Join("|", HiddenApps) + "#" + FrontProgram + "#" + string.Join("|", Devices.Select(d => d.Device.Id)) +
-                               "#" + Displays + "#" + string.Join("|", Keys ?? Array.Empty<string>()) + "#" + HelloReady;
+                               "#" + Displays + "#" + string.Join("|", Keys ?? Array.Empty<string>()) + "#" + HelloReady + "#" + Memories + "#" + Suggestions;
 
     /// <summary>A stored key's name in words: which service it is for. The value itself is never shown.</summary>
     public static string KeyLabel(string name) => name switch
@@ -41,10 +42,11 @@ sealed partial class IslandSurface
     string? _settingsStructure;
 
     /// <summary>Fills and shows the settings page; returns the height it needs, at most <paramref name="maxHeight"/> (the rest scrolls).</summary>
-    public double ShowSettings(SettingsModel model, bool opening, double maxHeight)
+    public double ShowSettings(SettingsModel model, bool opening, double maxHeight, int direction = 0)
     {
-        if (!opening && _settingsStructure == model.Structure && _panel.Width == SettingsWidth) return _lastSettingsHeight;
+        if (!opening && direction == 0 && _settingsStructure == model.Structure && _panel.Width == SettingsWidth) return _lastSettingsHeight;
         _settingsStructure = model.Structure;
+        LeaveTool();
         foreach (var row in _rows) if (row.Visible) row.Leave(toScale: 0.96);
         HideLyrics();
         _panelContent.Children.Clear();
@@ -72,6 +74,16 @@ sealed partial class IslandSurface
 
         var sections = new StackPanel { Spacing = 18, Padding = new Thickness(0, 0, 10, PanelPadding.Bottom + 4) };
 
+        sections.Children.Add(Section("Asking",
+            SwitchRow("Understand anything",
+                model.BrainModel is { } provider
+                    ? $"What my built-in commands don't cover is sent to {provider} to be understood. Only the words you type or say are sent: never your apps, files or screen."
+                    : "Needs a model. Store a Sarvam key with setup-keys.cmd (in the spikes folder) and it switches on.",
+                model.Brain, "toggle:" + IslandController.BrainFlag)));
+        foreach (var section in AgentSections(model.Memories, model.Suggestions)) sections.Children.Add(section);
+        sections.Children.Add(Section("Timer",
+            SwitchRow("Ticks and chime", "The ruler ticks as you set a timer, and a chime plays when it starts. The alarm always sounds when time is up.",
+                model.Sounds, "toggle:" + Forty.App.Sounds.Flag)));
         sections.Children.Add(Section("Music",
             SwitchRow("Lyrics", "Shows only the line being sung. Song names are sent to lrclib.net to find lyrics.", model.Lyrics, "toggle:" + MusicDirector.LyricsFlag),
             SwitchRow("Album colours", "Tints the island and fills it with the cover's colours while music plays.", model.Colours, "toggle:" + MusicDirector.ColoursFlag)));
@@ -168,7 +180,7 @@ sealed partial class IslandSurface
         _panel.IsHitTestVisible = true;
         _panelContent.Measure(new Windows.Foundation.Size(SettingsWidth, double.PositiveInfinity));
         _lastSettingsHeight = Math.Clamp(Math.Ceiling(_panelContent.DesiredSize.Height), 200, maxHeight);
-        _panelPart.Enter(opening ? 70 : 0, fromScale: opening ? 0.97 : 1, fromY: opening ? -4 : 0);
+        EnterPage(opening, direction);
         return _lastSettingsHeight;
     }
 

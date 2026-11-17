@@ -20,10 +20,18 @@ public static class Program
     }
 }
 
-sealed partial class App : Application
+sealed partial class App : Application, Microsoft.UI.Xaml.Markup.IXamlMetadataProvider
 {
     public const double WindowWidth = 560, WindowHeight = 640;   // room for the full settings page
     IslandController? _controller;
+
+    // A code-only app has no App.xaml, so nothing tells XAML about WinUI's own control types, and
+    // their theme resources can't be read (a text box then can't even enter the tree). WinUI's own
+    // provider answers for them.
+    readonly Microsoft.UI.Xaml.XamlTypeInfo.XamlControlsXamlMetaDataProvider _types = new();
+    public Microsoft.UI.Xaml.Markup.IXamlType GetXamlType(Type type) => _types.GetXamlType(type);
+    public Microsoft.UI.Xaml.Markup.IXamlType GetXamlType(string fullName) => _types.GetXamlType(fullName);
+    public Microsoft.UI.Xaml.Markup.XmlnsDefinition[] GetXmlnsDefinitions() => _types.GetXmlnsDefinitions();
 
     /// <summary>
     /// Forty's folder for settings, flags, keys and diagnostics: %LOCALAPPDATA%\Forty, or FORTY_HOME for
@@ -42,6 +50,7 @@ sealed partial class App : Application
           "agents": "you",
           "audio-output": "on",
           "bluetooth": "on",
+          "brain": "you",
           "diagnostics": "you",
           "every-display": "off",
           "follow-display": "off",
@@ -60,6 +69,12 @@ sealed partial class App : Application
         bool transitions = Environment.GetEnvironmentVariable("FORTY_DEMO") == "transitions";
         bool layout = Environment.GetEnvironmentVariable("FORTY_DEMO") == "layout";
         bool demo = Environment.GetEnvironmentVariable("FORTY_DEMO") == "1" || hold || transitions || layout;
+        // Demo and check runs are silent and never open the camera (the mirror shows a stand-in).
+        if (Environment.GetEnvironmentVariable("FORTY_DEMO") is { Length: > 0 } || Environment.GetEnvironmentVariable("FORTY_OFFSCREEN") == "1")
+        {
+            Sounds.Silent = true;
+            CameraMirror.StandIn = true;
+        }
 
         // Crash reports carry no personal data (F148) and stay on this PC.
         void Crash(Exception error, string where)
@@ -75,10 +90,18 @@ sealed partial class App : Application
 
         try
         {
+            // WinUI's control templates and the resources they name. The island draws almost everything
+            // itself, but a text box (the ask field) cannot enter the tree without them: a code-only app
+            // has no App.xaml to merge them in.
+            Resources.MergedDictionaries.Add(new Microsoft.UI.Xaml.Controls.XamlControlsResources());   // about 3 MB (measured 13 November)
             Directory.CreateDirectory(Home);
             string flagsFile = Path.Combine(Home, "flags.json");
             if (demo && Environment.GetEnvironmentVariable("FORTY_HOME") is not { Length: > 0 })
+            {
                 foreach (var file in new[] { flagsFile, Path.Combine(Home, "settings.json") }) File.Delete(file);   // each demo starts from the defaults
+                string runs = Path.Combine(Home, "runs");   // and with no run history from earlier demos
+                if (Directory.Exists(runs)) Directory.Delete(runs, recursive: true);
+            }
             if (!File.Exists(flagsFile)) File.WriteAllText(flagsFile, DefaultFlags);
             var flags = new FeatureFlags(flagsFile, developer: Environment.GetEnvironmentVariable("FORTY_CHANNEL") != "public");
 

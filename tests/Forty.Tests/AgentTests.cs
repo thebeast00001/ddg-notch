@@ -46,20 +46,20 @@ public static class AgentTests
     [Test]
     public static void Words_are_the_same_for_the_label_and_the_announcement()
     {
-        Check.Equal("Scout is using Files", AgentWords.Announcement(Cast.Scout, AgentState.UsingTool, "Files"), "a tool");
-        Check.Equal("Scribe needs your approval", AgentWords.Announcement(Cast.Scribe, AgentState.WaitingForApproval, null), "approval");
+        Check.Equal("Iris is using Files", AgentWords.Announcement(Cast.Iris, AgentState.UsingTool, "Files"), "a tool");
+        Check.Equal("Echo needs your approval", AgentWords.Announcement(Cast.Echo, AgentState.WaitingForApproval, null), "approval");
         Check.Equal("Using Files", AgentWords.Line(AgentState.UsingTool, "Files", null), "the line under the mark");
         Check.Equal("Working · 40%", AgentWords.Line(AgentState.Working, null, 0.4), "known progress");
         Check.True(AgentWords.Assertive(AgentState.NeedsInput) && !AgentWords.Assertive(AgentState.Working), "questions interrupt, work doesn't");
         foreach (AgentState state in Enum.GetValues<AgentState>())
-            Check.True(AgentWords.Label(state).Length > 0 && AgentWords.Announcement(Cast.Operator, state, null).StartsWith("Operator", StringComparison.Ordinal), $"{state} has words");
+            Check.True(AgentWords.Label(state).Length > 0 && AgentWords.Announcement(Cast.Bolt, state, null).StartsWith("Bolt", StringComparison.Ordinal), $"{state} has words");
     }
 
     [Test]
     public static void Scribe_follows_dictation_and_call_notes()
     {
         var roster = new Roster();
-        var scribe = roster[Cast.Scribe];
+        var scribe = roster[Cast.Echo];
         roster.ApplySpeech("listening", 0);
         roster.ApplySpeech("level 0.42", 0.1);
         Check.Equal(AgentState.Listening, scribe.StateAt(0.1), "listening while the key is held");
@@ -75,15 +75,15 @@ public static class AgentTests
         Check.Equal(AgentState.Listening, scribe.StateAt(10), "taking call notes is listening to the call");
         roster.ApplySpeech("call-failed", 20);
         Check.Equal(AgentState.Failed, scribe.StateAt(20), "failed");
-        Check.Equal(AgentState.Idle, roster[Cast.Scout].StateAt(20), "the others are untouched");
+        Check.Equal(AgentState.Idle, roster[Cast.Iris].StateAt(20), "the others are untouched");
     }
 
     [Test]
     public static void The_cast_has_distinct_hues_and_silhouettes()
     {
         Check.Equal(4, Cast.All.Select(a => a.Hue).Distinct().Count(), "four hues");
-        Check.Equal(4, Cast.All.Select(a => a.Silhouette).Distinct().Count(), "four silhouettes");
-        Check.True(!Cast.Working.Contains(Cast.Planner), "Planner waits for its job in phase 3");
+        Check.Equal(4, Cast.All.Select(a => a.Eyes).Distinct().Count(), "four kinds of eyes");
+        Check.True(Cast.Working.Contains(Cast.Tempo), "Tempo works from phase 2: the timer is its job");
         // ROADMAP 2.3 asks for 3:1 contrast on black; the relative luminance of each hue is checked here.
         foreach (var agent in Cast.All)
         {
@@ -91,5 +91,17 @@ public static class AgentTests
             double luminance = 0.2126 * L(agent.Hue.R) + 0.7152 * L(agent.Hue.G) + 0.0722 * L(agent.Hue.B);
             Check.True((luminance + 0.05) / 0.05 >= 3, $"{agent.Name} has at least 3:1 contrast on black");
         }
+    }
+
+    [Test]
+    public static void Dictation_belongs_to_Echo_so_its_face_shows_while_it_works()
+    {
+        var speech = new SpeechSession();
+        var listening = speech.Apply("listening", 0).Post.Single();
+        Check.True(listening.Agent == Cast.Echo, "listening is Echo's");
+        Check.True(listening.Mark == Sense.Microphone, "and still a microphone mark (F116), whose glyph shows beside the meter");
+        Check.True(speech.Apply("working", 1).Post.Single().Agent == Cast.Echo && speech.Apply("done", 2).Post.Single().Agent == Cast.Echo, "writing and done too");
+        Check.True(speech.Apply("recording Teams", 3).Post.Single().Agent == null, "call notes keep the recording mark in front, not a face");
+        Check.True(Cast.ById("operator") == Cast.Bolt && Cast.Bolt.AlsoCalled.Contains("Operator"), "renamed, the role and its old name still lead to it");
     }
 }
